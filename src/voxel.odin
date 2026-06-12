@@ -55,18 +55,29 @@ MAT_COLORS := [Material][4]u8 {
 	.Bedrock       = {42, 42, 44, 255},
 }
 
-// how much op power it takes to break a cell of this material
+// material resistance. Damage is proportional: carve radius scales with
+// power/toughness, so every weapon leaves a mark on everything but bedrock —
+// tough materials just erode in smaller bites.
 MAT_TOUGHNESS := [Material]f32 {
 	.Air           = 0,
 	.Grass         = 1.0,
 	.Dirt          = 1.0,
 	.Sand          = 0.8,
-	.Wood          = 2.5,
-	.Rock          = 4.0,
-	.Concrete      = 5.0,
-	.Concrete_Dark = 5.0,
-	.Metal         = 7.0,
+	.Wood          = 1.6,
+	.Rock          = 2.8,
+	.Concrete      = 3.2,
+	.Concrete_Dark = 3.2,
+	.Metal         = 4.5,
 	.Bedrock       = 1e9,
+}
+
+// effective carve radius after material resistance; 0 = immune
+carve_radius_for :: proc(r, power: f32, mat: Material) -> f32 {
+	ratio := power / MAT_TOUGHNESS[mat]
+	if ratio < 0.15 do return 0
+	if ratio >= 1 do return r
+	// weak-vs-tough still chips at least a small bite
+	return max(r * ratio, 0.15)
 }
 
 Chunk_Key :: [3]i32
@@ -330,9 +341,10 @@ voxel_carve :: proc(center: Vec3, r: f32, power: f32) {
 			for cx in t0.x ..= t1.x {
 				p := Vec3{f32(cx) * TVOX, py, f32(cz) * TVOX}
 				dist := vlen(p - center)
-				carve_d := dist - r // negative inside the sphere
+				r_eff := carve_radius_for(r, power, terrain_material(p))
+				if r_eff <= 0 do continue
+				carve_d := dist - r_eff // negative inside the sphere
 				if carve_d >= TVOX do continue
-				if power < MAT_TOUGHNESS[terrain_material(p)] do continue
 				key := tchunk_key_of(cx, cy, cz)
 				arr := materialize_tchunk(key)
 				idx := cell_index(cx, cy, cz)
@@ -364,7 +376,11 @@ voxel_carve :: proc(center: Vec3, r: f32, power: f32) {
 				if d.x * d.x + d.y * d.y + d.z * d.z > r2 do continue
 				cur := structure_at(vx, vy, vz)
 				if cur == .Air do continue
-				if power < MAT_TOUGHNESS[cur] do continue
+				r_eff := carve_radius_for(r, power, cur)
+				// the directly-hit cell always breaks if the material yields at all
+				if r_eff <= 0 do continue
+				d2 := d.x * d.x + d.y * d.y + d.z * d.z
+				if d2 > r_eff * r_eff && d2 > SVOX * SVOX * 0.6 do continue
 				key := schunk_key_of(vx, vy, vz)
 				arr := materialize_schunk(key)
 				arr[cell_index(vx, vy, vz)] = u8(Material.Air)

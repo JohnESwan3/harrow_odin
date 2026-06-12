@@ -15,7 +15,8 @@
       "PowerShell(Add-Type -AssemblyName System.Drawing; $src = [System.Drawing.Image]::FromFile\\(\"$env:TEMP\\\\harrow_sn1.png\"\\); $c = New-Object System.Drawing.Bitmap\\(620, 40\\); $g = [System.Drawing.Graphics]::FromImage\\($c\\); $g.DrawImage\\($src, \\(New-Object System.Drawing.Rectangle\\(0,0,620,40\\)\\), \\(New-Object System.Drawing.Rectangle\\(1300,0,620,40\\)\\), [System.Drawing.GraphicsUnit]::Pixel\\); $c.Save\\(\"$env:TEMP\\\\harrow_sn_fps.png\"\\); $src.Dispose\\(\\); \"saved\")",
       "PowerShell(Get-Process harrow -ErrorAction SilentlyContinue)",
       "PowerShell(Stop-Process -Force -Confirm:$false)",
-      "PowerShell(Get-Process *)"
+      "PowerShell(Get-Process *)",
+      "PowerShell(Get-Process harrow -ErrorAction SilentlyContinue | Stop-Process -Force -Confirm:$false; Start-Sleep -Milliseconds 500; odin build \"C:\\\\Users\\\\johneswan3\\\\Documents\\\\Development\\\\games\\\\vibe-multiplayer\\\\src\" -out:\"C:\\\\Users\\\\johneswan3\\\\Documents\\\\Development\\\\games\\\\vibe-multiplayer\\\\harrow.exe\" -o:speed -subsystem:windows 2>&1 | Select-Object -First 30; \"exit: $LASTEXITCODE\")"
     ]
   }
 }
