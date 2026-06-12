@@ -28,7 +28,17 @@ Settings :: struct {
 	fullscreen:  bool,
 	res_idx:     int,
 	vsync:       bool,
+	flash_idx:   int, // flashlight color preset
 }
+
+FLASH_COLORS := [5]Vec3{
+	{1.00, 0.90, 0.70}, // warm
+	{0.85, 0.95, 1.00}, // cool
+	{1.00, 0.65, 0.25}, // amber
+	{0.95, 0.20, 0.15}, // red
+	{0.30, 0.95, 0.40}, // green
+}
+FLASH_NAMES := [5]string{"WARM", "COOL", "AMBER", "RED", "GREEN"}
 
 CALLSIGNS := [?]string{
 	"REAPER", "NOMAD", "WRAITH", "BISHOP", "FROST", "ONYX", "HAVOC", "RELIC",
@@ -119,6 +129,8 @@ Game :: struct {
 	join_selected: int,
 	vsync_changed: bool,
 	enter_t:       f32, // session entry time; brief fire-input grace
+	tod:           f32, // time of day 0..1 (0.25 sunrise, 0.5 noon, 0.75 sunset)
+	flashlight:    bool,
 }
 
 game: Game
@@ -504,6 +516,10 @@ game_update_weapons :: proc(p: ^Player, dt: f32) {
 
 	if action_grenade() {
 		game_throw_grenade(p)
+	}
+
+	if action_flashlight() {
+		game.flashlight = !game.flashlight
 	}
 
 	if action_melee() {

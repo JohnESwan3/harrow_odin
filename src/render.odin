@@ -1,5 +1,6 @@
 package main
 
+import "core:math"
 import sg "../sokol/gfx"
 import sglue "../sokol/glue"
 import slog "../sokol/log"
@@ -27,6 +28,52 @@ Lighting :: struct {
 	ambient_dn:  Vec3,
 	fog_color:   Vec3,
 	fog_density: f32,
+	// flashlight (camera spot)
+	flash_on:    bool,
+	flash_pos:   Vec3,
+	flash_dir:   Vec3,
+	flash_color: Vec3,
+}
+
+DAY_LENGTH :: 600.0 // seconds per full cycle
+
+// drive sun/moon, ambient, and fog from time-of-day (0..1, 0.25 = sunrise)
+lighting_update :: proc(tod: f32) {
+	l := &renderer.light
+	ang := (tod - 0.25) * math.PI * 2
+	elev := math.sin(ang)
+	to_sun := vnorm(Vec3{math.cos(ang) * 0.85, elev, 0.4})
+
+	day_f := smoothstep(-0.04, 0.14, elev)
+	moon_f := smoothstep(0.02, 0.22, -elev)
+
+	warm := Vec3{1.0, 0.50, 0.26}
+	noon := Vec3{1.0, 0.93, 0.80}
+	sun_col := vlerp(warm, noon, smoothstep(0.0, 0.45, elev)) * (1.45 * day_f)
+	moon_col := Vec3{0.40, 0.50, 0.72} * (0.34 * moon_f)
+
+	if day_f >= moon_f {
+		l.sun_dir = -to_sun
+		l.sun_color = sun_col + moon_col * 0.3
+	} else {
+		// the moon rides the opposite arc, slightly offset
+		to_moon := vnorm(Vec3{-to_sun.x, -elev * 0.9 + 0.12, -to_sun.z * 0.8})
+		if to_moon.y < 0.08 do to_moon = vnorm(Vec3{to_moon.x, 0.08, to_moon.z})
+		l.sun_dir = -to_moon
+		l.sun_color = moon_col
+	}
+
+	day_amb_up := Vec3{0.20, 0.24, 0.32}
+	day_amb_dn := Vec3{0.11, 0.10, 0.095}
+	night_amb_up := Vec3{0.012, 0.018, 0.038}
+	night_amb_dn := Vec3{0.006, 0.008, 0.014}
+	l.ambient_up = vlerp(night_amb_up, day_amb_up, day_f) + Vec3{0.018, 0.026, 0.05} * moon_f
+	l.ambient_dn = vlerp(night_amb_dn, day_amb_dn, day_f) + Vec3{0.008, 0.012, 0.022} * moon_f
+
+	day_fog := Vec3{0.26, 0.27, 0.33}
+	night_fog := Vec3{0.012, 0.016, 0.034}
+	sunset := math.exp(-elev * elev * 28.0) * day_f
+	l.fog_color = vlerp(night_fog, day_fog, day_f) + Vec3{0.22, 0.07, 0.0} * sunset
 }
 
 renderer: struct {
@@ -191,16 +238,22 @@ camera_view_proj :: proc(cam: Camera, aspect: f32) -> Mat4 {
 	return proj * view
 }
 
+FLASH_INNER_COS :: 0.93
+FLASH_OUTER_COS :: 0.82
+
 render_uniforms :: proc(cam: Camera, aspect: f32) -> (Vs_Params, Fs_Params) {
 	l := renderer.light
 	vs := Vs_Params{view_proj = camera_view_proj(cam, aspect)}
 	fs := Fs_Params{
-		eye_pos    = {cam.pos.x, cam.pos.y, cam.pos.z, 0},
-		sun_dir    = {l.sun_dir.x, l.sun_dir.y, l.sun_dir.z, 0},
-		sun_color  = {l.sun_color.x, l.sun_color.y, l.sun_color.z, 0},
-		ambient_up = {l.ambient_up.x, l.ambient_up.y, l.ambient_up.z, 0},
-		ambient_dn = {l.ambient_dn.x, l.ambient_dn.y, l.ambient_dn.z, 0},
-		fog_color  = {l.fog_color.x, l.fog_color.y, l.fog_color.z, l.fog_density},
+		eye_pos     = {cam.pos.x, cam.pos.y, cam.pos.z, 0},
+		sun_dir     = {l.sun_dir.x, l.sun_dir.y, l.sun_dir.z, 0},
+		sun_color   = {l.sun_color.x, l.sun_color.y, l.sun_color.z, 0},
+		ambient_up  = {l.ambient_up.x, l.ambient_up.y, l.ambient_up.z, 0},
+		ambient_dn  = {l.ambient_dn.x, l.ambient_dn.y, l.ambient_dn.z, 0},
+		fog_color   = {l.fog_color.x, l.fog_color.y, l.fog_color.z, l.fog_density},
+		flash_pos   = {l.flash_pos.x, l.flash_pos.y, l.flash_pos.z, l.flash_on ? 1.0 : 0.0},
+		flash_dir   = {l.flash_dir.x, l.flash_dir.y, l.flash_dir.z, FLASH_OUTER_COS},
+		flash_color = {l.flash_color.x, l.flash_color.y, l.flash_color.z, FLASH_INNER_COS},
 	}
 	return vs, fs
 }

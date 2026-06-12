@@ -313,6 +313,10 @@ input_consume_menu_edges :: proc() {
 	input.pad_pressed[int(sdl.GamepadButton.SOUTH)] = false
 }
 
+action_flashlight :: proc() -> bool {
+	return key_pressed(.F) || pad_pressed(.DPAD_UP)
+}
+
 action_pause :: proc() -> bool {
 	return key_pressed(.ESCAPE) || pad_pressed(.START)
 }

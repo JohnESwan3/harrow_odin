@@ -201,9 +201,9 @@ draw_settings :: proc() {
 	draw_title_block()
 	s := ui.scale
 	px := 540 * s
-	py := 130 * s
+	py := 90 * s
 	pw := 560 * s
-	ui_panel(px, py, pw, 560 * s, "OPTIONS")
+	ui_panel(px, py, pw, 620 * s, "OPTIONS")
 
 	fx := px + 30 * s
 	fw := pw - 60 * s
@@ -218,9 +218,11 @@ draw_settings :: proc() {
 	ui_slider(fx, y, fw, 20 * s, "STICK SENSITIVITY", &game.settings.stick_sens, 1, 10, "%.1f")
 	y += 60 * s
 	ui_slider(fx, y, fw, 20 * s, "FIELD OF VIEW", &game.settings.fov, 70, 110, "%.0f")
-	y += 52 * s
-	ui_toggle(fx, y, fw, 34 * s, "INVERT LOOK Y", &game.settings.invert_y)
 	y += 50 * s
+	ui_selector(fx, y, fw, 34 * s, "FLASHLIGHT", FLASH_NAMES[:], &game.settings.flash_idx)
+	y += 48 * s
+	ui_toggle(fx, y, fw, 34 * s, "INVERT LOOK Y", &game.settings.invert_y)
+	y += 48 * s
 
 	if ui_button(fx, y, fw, 44 * s, "VIDEO") {
 		game.screen = .Settings_Video

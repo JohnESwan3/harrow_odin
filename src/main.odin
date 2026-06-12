@@ -3,8 +3,10 @@ package main
 import "base:runtime"
 import "core:encoding/json"
 import "core:fmt"
+import "core:math"
 import "core:net"
 import "core:os"
+import "core:strconv"
 import win "core:sys/windows"
 import sapp "../sokol/app"
 import sg "../sokol/gfx"
@@ -117,6 +119,7 @@ init_cb :: proc "c" () {
 	input_init()
 	voxel_world_init()
 	game.screen = .Main_Menu
+	game.tod = 0.35 // mid-morning
 	// pre-stream the menu backdrop
 	voxel_stream({0, 20, 0}, 0, sync_radius_m = 56)
 	handle_cli_args()
@@ -134,6 +137,12 @@ handle_cli_args :: proc() {
 		case "-probe":
 			world_probe()
 			os.exit(0)
+		case "-tod":
+			if i + 1 < len(os.args) {
+				if v, ok := strconv.parse_f32(os.args[i + 1]); ok do game.tod = v
+			}
+		case "-flash":
+			game.flashlight = true
 		case "-solo":
 			game_start_solo()
 		case "-host":
@@ -164,6 +173,12 @@ frame_cb :: proc "c" () {
 		game_update_ingame(dt)
 	}
 
+	// world clock; only a solo pause freezes it
+	if !(game.paused && nett.role == .None && game.screen == .In_Game) {
+		game.tod = math.mod(game.tod + dt / DAY_LENGTH, 1.0)
+	}
+	lighting_update(game.tod)
+
 	// screen may have changed during update
 	cam: Camera
 	if game.screen == .In_Game {
@@ -175,6 +190,12 @@ frame_cb :: proc "c" () {
 		if sapp.mouse_locked() do sapp.lock_mouse(false)
 	}
 	voxel_stream(cam.pos, dt)
+
+	// flashlight follows the camera
+	renderer.light.flash_on = game.flashlight && game.screen == .In_Game && local_player().alive
+	renderer.light.flash_pos = cam.pos + flat_right(cam.yaw) * 0.22 - Vec3{0, 0.12, 0}
+	renderer.light.flash_dir = dir_from_angles(cam.yaw, cam.pitch)
+	renderer.light.flash_color = FLASH_COLORS[clamp(game.settings.flash_idx, 0, len(FLASH_COLORS) - 1)]
 
 	w := sapp.widthf()
 	h := sapp.heightf()

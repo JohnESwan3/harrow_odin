@@ -15,7 +15,7 @@ import "core:net"
 
 NET_PORT :: 27499
 NET_MAGIC :: u32(0x564D5031) // "VMP1"
-NET_PROTOCOL :: u8(2)
+NET_PROTOCOL :: u8(3)
 NAME_LEN :: 16
 SERVER_NAME_LEN :: 24
 NET_TIMEOUT :: 6.0
@@ -114,6 +114,7 @@ Msg_State :: struct #packed {
 Msg_Snapshot :: struct #packed {
 	header: Net_Header,
 	active: u8, // bitmask of live slots
+	tod:    f32, // host's world clock
 	states: [MAX_PLAYERS]Net_Player_State,
 	names:  [MAX_PLAYERS][NAME_LEN]u8,
 	colors: [MAX_PLAYERS]u8,
@@ -378,6 +379,7 @@ net_update_host :: proc(dt: f32) {
 		nett.snap_acc = 0
 		snap := Msg_Snapshot {
 			header = {NET_MAGIC, .Snapshot},
+			tod    = game.tod,
 		}
 		for id in 0 ..< MAX_PLAYERS {
 			if !game.active[id] do continue
@@ -592,6 +594,7 @@ net_handle :: proc(data: []u8, from: net.Endpoint) {
 		msg, mok := msg_as(Msg_Snapshot, data)
 		if !mok do return
 		nett.last_snap = 0
+		game.tod = msg.tod
 		for id in 0 ..< MAX_PLAYERS {
 			live := (msg.active & (1 << u8(id))) != 0
 			if id == game.local_id do continue

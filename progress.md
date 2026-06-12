@@ -43,3 +43,11 @@ Working log of major changes. One entry per commit-worthy milestone.
   hit the void. Buildings/structures moved to 0.125 m voxels (same as
   terrain). Verified via `-probe` dev flag (tree/mountain/snow/cave stats)
   and in-game: 58 FPS @ 2.8 M tris, r=128 m. Save format bumped to HRW2.
+- **Day/night cycle + flashlight**: 10-minute full cycle (0.25 = sunrise).
+  Sun color/elevation drive ambient, fog and sky; sunset adds a rose tint;
+  nights are genuinely dark with a bright blue moon on the opposite arc.
+  Camera-mounted flashlight spotlight (F / d-pad up) with color presets
+  (warm/cool/amber/red/green) in OPTIONS. Lighting unified into a shared
+  shader block (instanced + voxel paths). Host syncs the world clock to
+  clients in snapshots (protocol v3). Dev flags `-tod x` and `-flash`.
+  Verified at midnight (flashlight cone + moonlight) and sunset.
