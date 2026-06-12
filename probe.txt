@@ -1,0 +1,6 @@
+trees in 600x600m: 2143
+max height: 68.3 m
+mountain coverage: 1.5%
+snow coverage: 5.7%
+cave fraction at depth 7m: 4.1%
+stamps: 241  air boxes: 3  spawns: 8

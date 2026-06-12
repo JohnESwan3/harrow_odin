@@ -2,6 +2,7 @@ package main
 
 import "base:runtime"
 import "core:encoding/json"
+import "core:fmt"
 import "core:net"
 import "core:os"
 import win "core:sys/windows"
@@ -69,6 +70,44 @@ request_quit :: proc() {
 	sapp.request_quit()
 }
 
+// dev sanity check of world generation, written to probe.txt (harrow -probe)
+world_probe :: proc() {
+	sb: [4096]u8
+	n := 0
+	put :: proc(buf: []u8, n: ^int, s: string) {
+		c := copy(buf[n^:], s)
+		n^ += c
+	}
+	trees := 0
+	for cj in i32(-43) ..= 43 {
+		for ci in i32(-43) ..= 43 {
+			if tree_cell_get(ci, cj).ok do trees += 1
+		}
+	}
+	mountain_n := 0
+	snow_n := 0
+	cave_n := 0
+	total := 0
+	hmax := f32(0)
+	for z := f32(-500); z <= 500; z += 10 {
+		for x := f32(-500); x <= 500; x += 10 {
+			h := terrain_height(x, z)
+			hmax = max(hmax, h)
+			if mountain_at(x, z) > 0.3 do mountain_n += 1
+			if h > snowline_at(x, z) do snow_n += 1
+			if cave_sdf(Vec3{x, h - 7, z}, 7) < 0 do cave_n += 1
+			total += 1
+		}
+	}
+	put(sb[:], &n, fmt.tprintf("trees in 600x600m: %d\n", trees))
+	put(sb[:], &n, fmt.tprintf("max height: %.1f m\n", hmax))
+	put(sb[:], &n, fmt.tprintf("mountain coverage: %.1f%%\n", f32(mountain_n) / f32(total) * 100))
+	put(sb[:], &n, fmt.tprintf("snow coverage: %.1f%%\n", f32(snow_n) / f32(total) * 100))
+	put(sb[:], &n, fmt.tprintf("cave fraction at depth 7m: %.1f%%\n", f32(cave_n) / f32(total) * 100))
+	put(sb[:], &n, fmt.tprintf("stamps: %d  air boxes: %d  spawns: %d\n", len(voxw.stamps), len(voxw.air_boxes), len(voxw.spawns)))
+	_ = os.write_entire_file("probe.txt", sb[:n])
+}
+
 // ---- app callbacks ------------------------------------------------------------
 
 init_cb :: proc "c" () {
@@ -92,6 +131,9 @@ handle_cli_args :: proc() {
 	}
 	for arg, i in os.args {
 		switch arg {
+		case "-probe":
+			world_probe()
+			os.exit(0)
 		case "-solo":
 			game_start_solo()
 		case "-host":

@@ -46,7 +46,7 @@ renderer: struct {
 render_init :: proc() {
 	sg.setup({
 		environment = sglue.environment(),
-		buffer_pool_size = 16384, // two buffers per streamed voxel chunk
+		buffer_pool_size = 32768, // two buffers per streamed voxel tile/chunk
 		logger = {func = slog.func},
 	})
 

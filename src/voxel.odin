@@ -5,29 +5,30 @@ import "core:os"
 
 // Two-layer voxel world:
 //
-//   TERRAIN  — signed density field at 0.125 m cells (TVOX). Meshed with
-//              surface nets, so hills are round and craters are smooth while
-//              destruction stays per-voxel. Procedural base costs nothing;
-//              only edited 32^3 density chunks (4 m) materialize.
+//   TERRAIN  — signed density field at 0.125 m cells (TVOX), meshed with
+//              surface nets (round hills, smooth craters). Includes biomes
+//              (forest density, mountains, snowline), 3D-noise cave systems,
+//              and landmark interiors. Procedural base costs nothing; only
+//              edited 32^3 density chunks materialize.
 //
-//   STRUCTURES — blocky material grid at 0.25 m cells (SVOX), greedy-meshed.
-//              Buildings are rectilinear, so flat faces are the correct look;
-//              the coarser grid costs nothing since collision and raycasts
-//              union both layers.
+//   STRUCTURES — blocky material grid, also 0.125 m (SVOX), greedy-meshed.
+//              Stamped buildings/landmarks plus procedural trees from a
+//              deterministic hash grid (cached per cell).
 //
-// Every destruction event is a compact op {pos, radius, power}. A voxel only
-// breaks if power >= its material's toughness. Ops replicate over the network
-// and persist as an append-only log (world.sav).
+// Every destruction event is a compact op {pos, radius, power}. Damage is
+// proportional to power/toughness — everything is destructible, tough
+// materials just erode in smaller bites. Ops replicate over the network and
+// persist as an append-only log (world.sav).
 
-TVOX :: 0.125 // terrain cell size (m)
+TVOX :: 0.125
 TVOX_INV :: 8.0
-SVOX :: 0.25 // structure cell size (m)
-SVOX_INV :: 4.0
+SVOX :: 0.125 // structures share the fine grid now
+SVOX_INV :: 8.0
 CHUNK_N :: 32
 TCHUNK_M :: f32(CHUNK_N) * TVOX // 4 m terrain density chunks
-SCHUNK_M :: f32(CHUNK_N) * SVOX // 8 m structure chunks
-WORLD_H :: 64.0 // world height (m)
-WORLD_HALF_M :: 1024.0 // playable area 2048 x 2048 m
+SCHUNK_M :: f32(CHUNK_N) * SVOX // 4 m structure chunks
+WORLD_H :: 112.0                // mountains need headroom
+WORLD_HALF_M :: 1024.0
 
 Material :: enum u8 {
 	Air,
@@ -40,6 +41,8 @@ Material :: enum u8 {
 	Metal,
 	Wood,
 	Bedrock,
+	Snow,
+	Leaves,
 }
 
 MAT_COLORS := [Material][4]u8 {
@@ -52,12 +55,13 @@ MAT_COLORS := [Material][4]u8 {
 	.Concrete_Dark = {84, 84, 82, 255},
 	.Metal         = {74, 90, 104, 255},
 	.Wood          = {118, 76, 42, 255},
-	.Bedrock       = {42, 42, 44, 255},
+	.Bedrock       = {48, 46, 50, 255},
+	.Snow          = {225, 230, 238, 255},
+	.Leaves        = {62, 102, 40, 255},
 }
 
 // material resistance. Damage is proportional: carve radius scales with
-// power/toughness, so every weapon leaves a mark on everything but bedrock —
-// tough materials just erode in smaller bites.
+// power/toughness, so every weapon leaves a mark — nothing is immune.
 MAT_TOUGHNESS := [Material]f32 {
 	.Air           = 0,
 	.Grass         = 1.0,
@@ -68,20 +72,20 @@ MAT_TOUGHNESS := [Material]f32 {
 	.Concrete      = 3.2,
 	.Concrete_Dark = 3.2,
 	.Metal         = 4.5,
-	.Bedrock       = 1e9,
+	.Bedrock       = 6.0,
+	.Snow          = 0.6,
+	.Leaves        = 0.5,
 }
 
-// effective carve radius after material resistance; 0 = immune
 carve_radius_for :: proc(r, power: f32, mat: Material) -> f32 {
 	ratio := power / MAT_TOUGHNESS[mat]
 	if ratio < 0.15 do return 0
 	if ratio >= 1 do return r
-	// weak-vs-tough still chips at least a small bite
 	return max(r * ratio, 0.15)
 }
 
 Chunk_Key :: [3]i32
-Tile_Key :: [2]i32 // terrain mesh tiles are full-height columns
+Tile_Key :: [2]i32
 
 Stamp :: struct {
 	min, max: [3]i32, // structure-grid voxel coords
@@ -90,22 +94,43 @@ Stamp :: struct {
 
 Density_Chunk :: [CHUNK_N * CHUNK_N * CHUNK_N]f32
 
-voxw: struct {
-	// terrain density edits (4 m chunks, 0.125 m cells)
-	tedits:       map[Chunk_Key]^Density_Chunk,
-	// structure material edits (8 m chunks, 0.25 m cells)
-	sedits:       map[Chunk_Key]^[CHUNK_N * CHUNK_N * CHUNK_N]u8,
-	stamps:       [dynamic]Stamp,
-	op_log:       [dynamic]Voxel_Op,
-	dirty_tiles:  map[Tile_Key]bool, // terrain mesh tiles
-	dirty_chunks: map[Chunk_Key]bool, // structure mesh chunks
-	spawns:       [dynamic]Vec3,
+Tree :: struct {
+	base:    Vec3, // trunk root (slightly below ground)
+	trunk_h: f32,
+	trunk_r: f32,
+	can_r:   f32,
 }
 
-// ---- procedural terrain -------------------------------------------------------
+voxw: struct {
+	tedits:       map[Chunk_Key]^Density_Chunk,
+	sedits:       map[Chunk_Key]^[CHUNK_N * CHUNK_N * CHUNK_N]u8,
+	stamps:       [dynamic]Stamp,
+	stamp_chunks: map[Chunk_Key]bool, // structure chunks touched by stamps
+	air_boxes:    [dynamic]AABB, // carved interiors (bunkers) in the density field
+	op_log:       [dynamic]Voxel_Op,
+	dirty_tiles:  map[Tile_Key]bool,
+	dirty_chunks: map[Chunk_Key]bool,
+	spawns:       [dynamic]Vec3,
+
+	// deterministic tree grid, memoized
+	tree_cache: map[[2]i32]Maybe_Tree,
+}
+
+Maybe_Tree :: struct {
+	ok:   bool,
+	tree: Tree,
+}
+
+// ---- noise -------------------------------------------------------------------
 
 vhash :: proc(x, z: i32) -> f32 {
 	h := u32(x) * 374761393 + u32(z) * 668265263
+	h = (h ~ (h >> 13)) * 1274126177
+	return f32(h & 0xFFFFFF) / f32(0xFFFFFF)
+}
+
+vhash3 :: proc(x, y, z: i32) -> f32 {
+	h := u32(x) * 374761393 + u32(y) * 2246822519 + u32(z) * 668265263
 	h = (h ~ (h >> 13)) * 1274126177
 	return f32(h & 0xFFFFFF) / f32(0xFFFFFF)
 }
@@ -124,12 +149,65 @@ value_noise :: proc(x, z: f32) -> f32 {
 	return lerp(lerp(a, b, fx), lerp(c, d, fx), fz)
 }
 
-// terrain height in meters at world xz (meters); smooth by construction
+value_noise3 :: proc(p: Vec3) -> f32 {
+	xi := i32(math.floor(p.x))
+	yi := i32(math.floor(p.y))
+	zi := i32(math.floor(p.z))
+	fx := p.x - math.floor(p.x)
+	fy := p.y - math.floor(p.y)
+	fz := p.z - math.floor(p.z)
+	fx = fx * fx * (3 - 2 * fx)
+	fy = fy * fy * (3 - 2 * fy)
+	fz = fz * fz * (3 - 2 * fz)
+	c000 := vhash3(xi, yi, zi)
+	c100 := vhash3(xi + 1, yi, zi)
+	c010 := vhash3(xi, yi + 1, zi)
+	c110 := vhash3(xi + 1, yi + 1, zi)
+	c001 := vhash3(xi, yi, zi + 1)
+	c101 := vhash3(xi + 1, yi, zi + 1)
+	c011 := vhash3(xi, yi + 1, zi + 1)
+	c111 := vhash3(xi + 1, yi + 1, zi + 1)
+	x0 := lerp(lerp(c000, c100, fx), lerp(c010, c110, fx), fy)
+	x1 := lerp(lerp(c001, c101, fx), lerp(c011, c111, fx), fy)
+	return lerp(x0, x1, fz)
+}
+
+smoothstep :: proc(lo, hi, x: f32) -> f32 {
+	t := clamp((x - lo) / (hi - lo), 0, 1)
+	return t * t * (3 - 2 * t)
+}
+
+// ---- biomes ------------------------------------------------------------------
+
+// 0..1: how mountainous this region is
+mountain_at :: proc(x, z: f32) -> f32 {
+	return smoothstep(0.47, 0.78, value_noise(x * 0.0016 + 11.0, z * 0.0016 + 503.0))
+}
+
+// 0..1: forest density field
+forest_at :: proc(x, z: f32) -> f32 {
+	f := value_noise(x * 0.0045 + 137.0, z * 0.0045 + 59.0)
+	// keep the spawn plateau open
+	d := math.sqrt(x * x + z * z)
+	f *= clamp((d - 40) / 40.0, 0, 1)
+	return f
+}
+
+snowline_at :: proc(x, z: f32) -> f32 {
+	return 36.0 + (value_noise(x * 0.01 + 50.0, z * 0.01 - 30.0) - 0.5) * 9.0
+}
+
+// terrain height in meters; hills + mountain regions, flattened spawn plateau
 terrain_height :: proc(x, z: f32) -> f32 {
 	h := f32(7.0)
 	h += value_noise(x * 0.008, z * 0.008) * 26.0
 	h += value_noise(x * 0.03, z * 0.03) * 6.0
 	h += value_noise(x * 0.11, z * 0.11) * 1.2
+	m := mountain_at(x, z)
+	if m > 0 {
+		ridge := value_noise(x * 0.006 + 271.0, z * 0.006 - 89.0)
+		h += m * (34.0 + ridge * 38.0)
+	}
 	d := math.sqrt(x * x + z * z)
 	flat := f32(14.0)
 	if d < 60 {
@@ -146,7 +224,8 @@ terrain_material :: proc(p: Vec3) -> Material {
 	h := terrain_height(p.x, p.z)
 	depth := h - p.y
 	if depth < 0.45 {
-		if h > 30 do return .Rock
+		if h > snowline_at(p.x, p.z) do return .Snow
+		if h > snowline_at(p.x, p.z) - 9 do return .Rock
 		if h < 9 do return .Sand
 		return .Grass
 	}
@@ -154,9 +233,36 @@ terrain_material :: proc(p: Vec3) -> Material {
 	return .Rock
 }
 
-// signed density: > 0 inside terrain, smooth across the surface
+// ---- caves -------------------------------------------------------------------
+
+// signed cave field in ~meters: negative inside tunnels
+cave_sdf :: proc(p: Vec3, depth: f32) -> f32 {
+	if p.y < 2.2 do return 100 // tunnels never pierce the world floor on their own
+	n1 := value_noise3(p * 0.042 + Vec3{19, 7, 311})
+	n2 := value_noise3(p * 0.042 + Vec3{521, 113, 67})
+	q := (n1 - 0.5) * (n1 - 0.5) + (n2 - 0.5) * (n2 - 0.5)
+	r := 0.0024 + min(depth, 32) / 32.0 * 0.0022 // wider when deeper
+	return (q - r) * 230.0
+}
+
+// density given a cached column height (hot path for meshing/materialize)
+density_from_h :: proc(h: f32, p: Vec3) -> f32 {
+	d := h - p.y
+	if d > -0.25 {
+		d = min(d, cave_sdf(p, d))
+	}
+	for b in voxw.air_boxes {
+		if p.x > b.min.x && p.x < b.max.x &&
+		   p.y > b.min.y && p.y < b.max.y &&
+		   p.z > b.min.z && p.z < b.max.z {
+			d = min(d, -1)
+		}
+	}
+	return d
+}
+
 terrain_density_procedural :: proc(p: Vec3) -> f32 {
-	return terrain_height(p.x, p.z) - p.y
+	return density_from_h(terrain_height(p.x, p.z), p)
 }
 
 tchunk_key_of :: proc(cx, cy, cz: i32) -> Chunk_Key {
@@ -171,10 +277,9 @@ cell_index :: proc(cx, cy, cz: i32) -> int {
 	)
 }
 
-// terrain density at fine-grid integer cell corner
 terrain_density_at :: proc(cx, cy, cz: i32) -> f32 {
+	if cy < 0 do return -1 // dig through the bottom and you reach the void
 	p := Vec3{f32(cx) * TVOX, f32(cy) * TVOX, f32(cz) * TVOX}
-	if p.y <= 0.25 do return 1.0 // bedrock floor
 	key := tchunk_key_of(cx, cy, cz)
 	if arr, ok := voxw.tedits[key]; ok {
 		return arr[cell_index(cx, cy, cz)]
@@ -193,6 +298,89 @@ terrain_solid_at :: proc(p: Vec3) -> bool {
 	)
 }
 
+// ---- trees (deterministic hash grid, memoized) ---------------------------------
+
+TREE_CELL :: 7.0
+TREE_REACH :: 2.6 // max horizontal extent of any tree from its anchor
+
+tree_cell_get :: proc(ci, cj: i32) -> Maybe_Tree {
+	key := [2]i32{ci, cj}
+	if cached, ok := voxw.tree_cache[key]; ok do return cached
+	result: Maybe_Tree
+
+	jx := vhash(ci * 5 + 1, cj * 3 + 7)
+	jz := vhash(ci * 9 - 3, cj * 11 + 5)
+	cx := (f32(ci) + 0.2 + 0.6 * jx) * TREE_CELL
+	cz := (f32(cj) + 0.2 + 0.6 * jz) * TREE_CELL
+	f := forest_at(cx, cz)
+	roll := vhash(ci * 31 + 1009, cj * 17 - 401)
+	for {
+		if f < 0.5 do break
+		if roll > (f - 0.48) * 3.2 do break
+		g := terrain_height(cx, cz)
+		if g < 9.5 || g > snowline_at(cx, cz) + 1 do break
+		// no trees on steep slopes
+		if abs(terrain_height(cx + 1.5, cz) - terrain_height(cx - 1.5, cz)) > 2.2 do break
+		if abs(terrain_height(cx, cz + 1.5) - terrain_height(cx, cz - 1.5)) > 2.2 do break
+		s := 0.7 + vhash(ci * 13, cj * 29) * 0.9
+		result = {
+			ok = true,
+			tree = {
+				base    = {cx, g - 0.4, cz},
+				trunk_h = 3.0 * s,
+				trunk_r = 0.14 * s + 0.07,
+				can_r   = 1.45 * s,
+			},
+		}
+		break
+	}
+	voxw.tree_cache[key] = result
+	return result
+}
+
+tree_material :: proc(t: Tree, p: Vec3) -> Material {
+	d := p - t.base
+	if d.y >= 0 && d.y <= t.trunk_h + 0.3 && abs(d.x) <= t.trunk_r && abs(d.z) <= t.trunk_r {
+		return .Wood
+	}
+	cc := t.base + Vec3{0, t.trunk_h + t.can_r * 0.5, 0}
+	e := (p - cc) / Vec3{t.can_r, t.can_r * 0.8, t.can_r}
+	q := e.x * e.x + e.y * e.y + e.z * e.z
+	if q <= 1 {
+		// ragged canopy edge
+		if q > 0.62 {
+			if vhash3(i32(p.x * 8), i32(p.y * 8), i32(p.z * 8)) < 0.42 do return .Air
+		}
+		return .Leaves
+	}
+	return .Air
+}
+
+// trees whose extent can touch the world-space box
+collect_trees :: proc(bmin, bmax: Vec3, out: ^[8]Tree) -> int {
+	c0 := i32(math.floor((bmin.x - TREE_REACH) / TREE_CELL))
+	c1 := i32(math.floor((bmax.x + TREE_REACH) / TREE_CELL))
+	j0 := i32(math.floor((bmin.z - TREE_REACH) / TREE_CELL))
+	j1 := i32(math.floor((bmax.z + TREE_REACH) / TREE_CELL))
+	n := 0
+	for cj in j0 ..= j1 {
+		for ci in c0 ..= c1 {
+			mt := tree_cell_get(ci, cj)
+			if !mt.ok do continue
+			t := mt.tree
+			if t.base.x + TREE_REACH < bmin.x || t.base.x - TREE_REACH > bmax.x do continue
+			if t.base.z + TREE_REACH < bmin.z || t.base.z - TREE_REACH > bmax.z do continue
+			top := t.base.y + t.trunk_h + t.can_r * 1.4
+			if top < bmin.y || t.base.y > bmax.y do continue
+			if n < 8 {
+				out[n] = t
+				n += 1
+			}
+		}
+	}
+	return n
+}
+
 // ---- structures ----------------------------------------------------------------
 
 schunk_key_of :: proc(vx, vy, vz: i32) -> Chunk_Key {
@@ -202,13 +390,19 @@ schunk_key_of :: proc(vx, vy, vz: i32) -> Chunk_Key {
 structure_procedural_at :: proc(vx, vy, vz: i32) -> Material {
 	mat: Material = .Air
 	for s in voxw.stamps {
-		if vx >= s.min.x &&
-		   vx < s.max.x &&
-		   vy >= s.min.y &&
-		   vy < s.max.y &&
-		   vz >= s.min.z &&
-		   vz < s.max.z {
+		if vx >= s.min.x && vx < s.max.x &&
+		   vy >= s.min.y && vy < s.max.y &&
+		   vz >= s.min.z && vz < s.max.z {
 			mat = s.mat
+		}
+	}
+	if mat == .Air {
+		p := Vec3{(f32(vx) + 0.5) * SVOX, (f32(vy) + 0.5) * SVOX, (f32(vz) + 0.5) * SVOX}
+		trees: [8]Tree
+		n := collect_trees(p, p, &trees)
+		for i in 0 ..< n {
+			tm := tree_material(trees[i], p)
+			if tm != .Air do return tm
 		}
 	}
 	return mat
@@ -239,7 +433,6 @@ solid_at_world :: proc(p: Vec3) -> bool {
 	return terrain_solid_at(p) || structure_solid_at(p)
 }
 
-// material at a hit point (for particles/durability); structures win
 material_at_point :: proc(p: Vec3) -> Material {
 	m := structure_at(
 		i32(math.floor(p.x * SVOX_INV)),
@@ -262,9 +455,12 @@ materialize_tchunk :: proc(key: Chunk_Key) -> ^Density_Chunk {
 	base := Vec3{f32(key.x) * TCHUNK_M, f32(key.y) * TCHUNK_M, f32(key.z) * TCHUNK_M}
 	for lz in 0 ..< CHUNK_N {
 		for lx in 0 ..< CHUNK_N {
-			h := terrain_height(base.x + f32(lx) * TVOX, base.z + f32(lz) * TVOX)
+			px := base.x + f32(lx) * TVOX
+			pz := base.z + f32(lz) * TVOX
+			h := terrain_height(px, pz)
 			for ly in 0 ..< CHUNK_N {
-				arr[ly * CHUNK_N * CHUNK_N + lz * CHUNK_N + lx] = h - (base.y + f32(ly) * TVOX)
+				p := Vec3{px, base.y + f32(ly) * TVOX, pz}
+				arr[ly * CHUNK_N * CHUNK_N + lz * CHUNK_N + lx] = density_from_h(h, p)
 			}
 		}
 	}
@@ -276,22 +472,10 @@ materialize_schunk :: proc(key: Chunk_Key) -> ^[CHUNK_N * CHUNK_N * CHUNK_N]u8 {
 	if arr, ok := voxw.sedits[key]; ok do return arr
 	arr := new([CHUNK_N * CHUNK_N * CHUNK_N]u8)
 	base := [3]i32{key.x * CHUNK_N, key.y * CHUNK_N, key.z * CHUNK_N}
-	cmin := base
-	cmax := [3]i32{base.x + CHUNK_N, base.y + CHUNK_N, base.z + CHUNK_N}
-	for s in voxw.stamps {
-		if s.max.x <= cmin.x ||
-		   s.min.x >= cmax.x ||
-		   s.max.y <= cmin.y ||
-		   s.min.y >= cmax.y ||
-		   s.max.z <= cmin.z ||
-		   s.min.z >= cmax.z {
-			continue
-		}
-		for vy in max(s.min.y, cmin.y) ..< min(s.max.y, cmax.y) {
-			for vz in max(s.min.z, cmin.z) ..< min(s.max.z, cmax.z) {
-				for vx in max(s.min.x, cmin.x) ..< min(s.max.x, cmax.x) {
-					arr[cell_index(vx, vy, vz)] = u8(s.mat)
-				}
+	for vy in base.y ..< base.y + CHUNK_N {
+		for vz in base.z ..< base.z + CHUNK_N {
+			for vx in base.x ..< base.x + CHUNK_N {
+				arr[cell_index(vx, vy, vz)] = u8(structure_procedural_at(vx, vy, vz))
 			}
 		}
 	}
@@ -304,10 +488,8 @@ tile_of_cell :: proc(cx, cz: i32) -> Tile_Key {
 }
 
 mark_tile_dirty_around :: proc(cx, cz: i32) {
-	// a cell edit can move vertices in adjacent tiles' margin cells
 	t := tile_of_cell(cx, cz)
 	voxw.dirty_tiles[t] = true
-	// the render mesh samples 2 fine cells into neighbor tiles
 	M :: 2
 	lx := cx & (CHUNK_N - 1)
 	lz := cz & (CHUNK_N - 1)
@@ -321,29 +503,27 @@ mark_tile_dirty_around :: proc(cx, cz: i32) {
 	if lx >= CHUNK_N - 1 - M && lz <= M do voxw.dirty_tiles[{t.x + 1, t.y - 1}] = true
 }
 
-// carve a sphere; per-cell material toughness gates against op power
 voxel_carve :: proc(center: Vec3, r: f32, power: f32) {
 	// terrain: subtract a smooth sphere from the density field
-	t0 := [3]i32 {
+	t0 := [3]i32{
 		i32(math.floor((center.x - r - TVOX) * TVOX_INV)),
 		i32(math.floor((center.y - r - TVOX) * TVOX_INV)),
 		i32(math.floor((center.z - r - TVOX) * TVOX_INV)),
 	}
-	t1 := [3]i32 {
+	t1 := [3]i32{
 		i32(math.floor((center.x + r + TVOX) * TVOX_INV)),
 		i32(math.floor((center.y + r + TVOX) * TVOX_INV)),
 		i32(math.floor((center.z + r + TVOX) * TVOX_INV)),
 	}
-	for cy in t0.y ..= t1.y {
+	for cy in max(t0.y, 0) ..= t1.y {
 		py := f32(cy) * TVOX
-		if py <= 0.5 do continue // bedrock floor
 		for cz in t0.z ..= t1.z {
 			for cx in t0.x ..= t1.x {
 				p := Vec3{f32(cx) * TVOX, py, f32(cz) * TVOX}
 				dist := vlen(p - center)
 				r_eff := carve_radius_for(r, power, terrain_material(p))
 				if r_eff <= 0 do continue
-				carve_d := dist - r_eff // negative inside the sphere
+				carve_d := dist - r_eff
 				if carve_d >= TVOX do continue
 				key := tchunk_key_of(cx, cy, cz)
 				arr := materialize_tchunk(key)
@@ -357,12 +537,12 @@ voxel_carve :: proc(center: Vec3, r: f32, power: f32) {
 	}
 
 	// structures: clear cells inside the sphere
-	s0 := [3]i32 {
+	s0 := [3]i32{
 		i32(math.floor((center.x - r) * SVOX_INV)),
 		i32(math.floor((center.y - r) * SVOX_INV)),
 		i32(math.floor((center.z - r) * SVOX_INV)),
 	}
-	s1 := [3]i32 {
+	s1 := [3]i32{
 		i32(math.floor((center.x + r) * SVOX_INV)),
 		i32(math.floor((center.y + r) * SVOX_INV)),
 		i32(math.floor((center.z + r) * SVOX_INV)),
@@ -373,14 +553,14 @@ voxel_carve :: proc(center: Vec3, r: f32, power: f32) {
 			for vx in s0.x ..= s1.x {
 				c := Vec3{(f32(vx) + 0.5) * SVOX, (f32(vy) + 0.5) * SVOX, (f32(vz) + 0.5) * SVOX}
 				d := c - center
-				if d.x * d.x + d.y * d.y + d.z * d.z > r2 do continue
+				d2 := d.x * d.x + d.y * d.y + d.z * d.z
+				if d2 > r2 do continue
 				cur := structure_at(vx, vy, vz)
 				if cur == .Air do continue
 				r_eff := carve_radius_for(r, power, cur)
-				// the directly-hit cell always breaks if the material yields at all
 				if r_eff <= 0 do continue
-				d2 := d.x * d.x + d.y * d.y + d.z * d.z
-				if d2 > r_eff * r_eff && d2 > SVOX * SVOX * 0.6 do continue
+				// the directly-hit cell always breaks if the material yields at all
+				if d2 > r_eff * r_eff && d2 > SVOX * SVOX * 2.5 do continue
 				key := schunk_key_of(vx, vy, vz)
 				arr := materialize_schunk(key)
 				arr[cell_index(vx, vy, vz)] = u8(Material.Air)
@@ -404,10 +584,10 @@ voxel_apply_op :: proc(op: Voxel_Op, record: bool) {
 	if record do append(&voxw.op_log, op)
 }
 
-// ---- persistence (versioned op log) ---------------------------------------------
+// ---- persistence ----------------------------------------------------------------
 
 WORLD_SAVE :: "world.sav"
-SAVE_MAGIC :: u32(0x48525731) // "HRW1"
+SAVE_MAGIC :: u32(0x48525732) // "HRW2" — world v3 generation
 
 voxel_save :: proc() {
 	if len(voxw.op_log) == 0 do return
@@ -434,14 +614,15 @@ voxel_load :: proc() {
 // ---- world generation -----------------------------------------------------------
 
 stamp_box_m :: proc(min, max: Vec3, mat: Material) {
-	append(
-		&voxw.stamps,
-		Stamp {
-			min = {i32(min.x * SVOX_INV), i32(min.y * SVOX_INV), i32(min.z * SVOX_INV)},
-			max = {i32(max.x * SVOX_INV), i32(max.y * SVOX_INV), i32(max.z * SVOX_INV)},
-			mat = mat,
-		},
-	)
+	append(&voxw.stamps, Stamp{
+		min = {i32(min.x * SVOX_INV), i32(min.y * SVOX_INV), i32(min.z * SVOX_INV)},
+		max = {i32(max.x * SVOX_INV), i32(max.y * SVOX_INV), i32(max.z * SVOX_INV)},
+		mat = mat,
+	})
+}
+
+air_box_m :: proc(min, max: Vec3) {
+	append(&voxw.air_boxes, AABB{min = min, max = max})
 }
 
 voxel_world_init :: proc() {
@@ -450,14 +631,18 @@ voxel_world_init :: proc() {
 	for _, arr in voxw.sedits do free(arr)
 	clear(&voxw.sedits)
 	clear(&voxw.stamps)
+	clear(&voxw.stamp_chunks)
+	clear(&voxw.air_boxes)
 	clear(&voxw.op_log)
 	clear(&voxw.dirty_tiles)
 	clear(&voxw.dirty_chunks)
 	clear(&voxw.spawns)
+	clear(&voxw.tree_cache)
 
 	G :: 14.0 // plateau ground level
 
-	wall :: proc(min, max: Vec3) {stamp_box_m(min, max, .Concrete)}
+	// central compound
+	wall :: proc(min, max: Vec3) { stamp_box_m(min, max, .Concrete) }
 	wall({-12, G - 0.5, -10}, {12, G, 10})
 	wall({-12, G, 9}, {-2, G + 4, 10})
 	wall({2, G, 9}, {12, G + 4, 10})
@@ -471,23 +656,18 @@ voxel_world_init :: proc() {
 	stamp_box_m({-12, G + 4, -10}, {12, G + 4.5, 10}, .Concrete_Dark)
 	stamp_box_m({-5, G, -1}, {-2.5, G + 1.25, 0.25}, .Metal)
 	stamp_box_m({3, G, -4}, {4.5, G + 1.25, -1}, .Metal)
-
-	// stairs to the roof, 0.25 m risers
 	for i in 0 ..< 18 {
 		fi := f32(i)
 		stamp_box_m({12.0 + fi * 0.5, G, -2}, {12.5 + fi * 0.5, G + 4.5 - fi * 0.25, 2}, .Concrete)
 	}
 
+	// watchtowers
 	tower :: proc(cx, cz: f32) {
 		gh := terrain_height(cx, cz) + 0.5
 		stamp_box_m({cx - 2.5, gh - 2, cz - 2.5}, {cx + 2.5, gh, cz + 2.5}, .Concrete_Dark)
 		for sx in ([2]f32{-2, 2}) {
 			for sz in ([2]f32{-2, 2}) {
-				stamp_box_m(
-					{cx + sx - 0.25, gh, cz + sz - 0.25},
-					{cx + sx + 0.25, gh + 5, cz + sz + 0.25},
-					.Metal,
-				)
+				stamp_box_m({cx + sx - 0.25, gh, cz + sz - 0.25}, {cx + sx + 0.25, gh + 5, cz + sz + 0.25}, .Metal)
 			}
 		}
 		stamp_box_m({cx - 2.75, gh + 5, cz - 2.75}, {cx + 2.75, gh + 5.5, cz + 2.75}, .Metal)
@@ -501,9 +681,71 @@ voxel_world_init :: proc() {
 	tower(-52, 52)
 	tower(52, 52)
 
-	rng := Rng {
-		state = 0xDEAD_50_11,
+	// ---- landmarks ----
+
+	// radio mast on a hill
+	{
+		mx := f32(300)
+		mz := f32(-210)
+		gh := terrain_height(mx, mz)
+		stamp_box_m({mx - 3, gh - 1, mz - 3}, {mx + 3, gh + 0.5, mz + 3}, .Concrete)
+		for sx in ([2]f32{-1.5, 1.5}) {
+			for sz in ([2]f32{-1.5, 1.5}) {
+				stamp_box_m({mx + sx - 0.2, gh + 0.5, mz + sz - 0.2}, {mx + sx + 0.2, gh + 26, mz + sz + 0.2}, .Metal)
+			}
+		}
+		for lvl in 0 ..< 5 {
+			ly := gh + 5 + f32(lvl) * 5
+			stamp_box_m({mx - 1.7, ly, mz - 1.7}, {mx + 1.7, ly + 0.25, mz + 1.7}, .Metal)
+		}
+		stamp_box_m({mx - 0.2, gh + 26, mz - 0.2}, {mx + 0.2, gh + 31, mz + 0.2}, .Metal)
+		// service hut
+		stamp_box_m({mx + 5, gh, mz - 2}, {mx + 9, gh + 2.5, mz + 2}, .Concrete_Dark)
+		air_box_m({mx + 5.25, gh, mz - 1.75}, {mx + 8.75, gh + 2.25, mz + 1.75})
+		stamp_box_m({mx + 5, gh, mz - 0.6}, {mx + 5.3, gh + 2, mz + 0.6}, .Air) // doorway
 	}
+
+	// buried bunker with a cut entrance
+	{
+		bx := f32(-280)
+		bz := f32(160)
+		gh := terrain_height(bx, bz)
+		fl := gh - 6 // floor depth
+		// hollow interior carved out of the terrain
+		air_box_m({bx - 6, fl, bz - 5}, {bx + 6, fl + 3.2, bz + 5})
+		// concrete shell
+		stamp_box_m({bx - 6.5, fl - 0.5, bz - 5.5}, {bx + 6.5, fl, bz + 5.5}, .Concrete)
+		stamp_box_m({bx - 6.5, fl + 3.2, bz - 5.5}, {bx + 6.5, fl + 3.7, bz + 5.5}, .Concrete)
+		stamp_box_m({bx - 6.5, fl, bz - 5.5}, {bx - 6, fl + 3.2, bz + 5.5}, .Concrete)
+		stamp_box_m({bx + 6, fl, bz - 5.5}, {bx + 6.5, fl + 3.2, bz + 5.5}, .Concrete)
+		stamp_box_m({bx - 6.5, fl, bz - 5.5}, {bx + 6.5, fl + 3.2, bz - 5}, .Concrete)
+		stamp_box_m({bx - 6.5, fl, bz + 5}, {bx + 6.5, fl + 3.2, bz + 5.5}, .Concrete)
+		// entrance ramp cut down through the ground
+		air_box_m({bx + 6, fl, bz - 1.5}, {bx + 22, gh + 2.5, bz + 1.5})
+		stamp_box_m({bx + 6, fl, bz - 1.5}, {bx + 6.5, fl + 3.2, bz + 1.5}, .Air) // shell doorway
+		// interior crates
+		stamp_box_m({bx - 4, fl, bz - 3}, {bx - 2.5, fl + 1.5, bz - 1.5}, .Wood)
+		stamp_box_m({bx + 1, fl, bz + 2}, {bx + 2.2, fl + 1.2, bz + 3.2}, .Metal)
+	}
+
+	// standing stones
+	{
+		sx := f32(180)
+		sz := f32(330)
+		for i in 0 ..< 8 {
+			a := f32(i) * (math.PI * 2.0 / 8.0)
+			px := sx + math.cos(a) * 10
+			pz := sz + math.sin(a) * 10
+			gh := terrain_height(px, pz)
+			h := 3.0 + vhash(i32(i * 7), 13) * 2.0
+			stamp_box_m({px - 0.5, gh - 0.5, pz - 0.3}, {px + 0.5, gh + h, pz + 0.3}, .Rock)
+		}
+		gh := terrain_height(sx, sz)
+		stamp_box_m({sx - 1.2, gh - 0.5, sz - 1.2}, {sx + 1.2, gh + 0.8, sz + 1.2}, .Rock)
+	}
+
+	// scattered ruins / crates / dead trees
+	rng := Rng{state = 0xDEAD_50_11}
 	for _ in 0 ..< 140 {
 		x := rng_range(&rng, -300, 300)
 		z := rng_range(&rng, -300, 300)
@@ -523,6 +765,19 @@ voxel_world_init :: proc() {
 		}
 	}
 
+	// index which structure chunks the stamps touch (fast streaming scans)
+	for s in voxw.stamps {
+		k0 := Chunk_Key{s.min.x >> 5, s.min.y >> 5, s.min.z >> 5}
+		k1 := Chunk_Key{(s.max.x - 1) >> 5, (s.max.y - 1) >> 5, (s.max.z - 1) >> 5}
+		for ky in k0.y ..= k1.y {
+			for kz in k0.z ..= k1.z {
+				for kx in k0.x ..= k1.x {
+					voxw.stamp_chunks[{kx, ky, kz}] = true
+				}
+			}
+		}
+	}
+
 	for i in 0 ..< 8 {
 		a := f32(i) * (math.PI * 2.0 / 8.0)
 		x := math.cos(a) * 26
@@ -537,21 +792,11 @@ voxel_world_init :: proc() {
 
 STEP_HEIGHT :: 0.45
 
-// any solid (terrain or structure) inside box; also reports the solid extent
 solid_in_box :: proc(bmin, bmax: Vec3) -> (found: bool, smin, smax: Vec3) {
 	smin = {max(f32), max(f32), max(f32)}
 	smax = {min(f32), min(f32), min(f32)}
-	// fine grid sampling at terrain resolution covers both layers
-	v0 := [3]i32 {
-		i32(math.floor(bmin.x * TVOX_INV)),
-		i32(math.floor(bmin.y * TVOX_INV)),
-		i32(math.floor(bmin.z * TVOX_INV)),
-	}
-	v1 := [3]i32 {
-		i32(math.floor(bmax.x * TVOX_INV)),
-		i32(math.floor(bmax.y * TVOX_INV)),
-		i32(math.floor(bmax.z * TVOX_INV)),
-	}
+	v0 := [3]i32{i32(math.floor(bmin.x * TVOX_INV)), i32(math.floor(bmin.y * TVOX_INV)), i32(math.floor(bmin.z * TVOX_INV))}
+	v1 := [3]i32{i32(math.floor(bmax.x * TVOX_INV)), i32(math.floor(bmax.y * TVOX_INV)), i32(math.floor(bmax.z * TVOX_INV))}
 	for vy in v0.y ..= v1.y {
 		for vz in v0.z ..= v1.z {
 			for vx in v0.x ..= v1.x {
@@ -576,16 +821,7 @@ aabb_clear :: proc(center, half: Vec3) -> bool {
 	return !found
 }
 
-world_move :: proc(
-	pos: Vec3,
-	half: Vec3,
-	delta: Vec3,
-	allow_step := false,
-) -> (
-	out: Vec3,
-	on_ground: bool,
-	hit_ceiling: bool,
-) {
+world_move :: proc(pos: Vec3, half: Vec3, delta: Vec3, allow_step := false) -> (out: Vec3, on_ground: bool, hit_ceiling: bool) {
 	EPS :: 0.001
 	out = pos
 	axes := [3]int{0, 2, 1}
@@ -618,9 +854,8 @@ world_move :: proc(
 	return
 }
 
-// DDA raycast on the fine terrain grid; checks both layers per cell
 world_raycast :: proc(origin, dir: Vec3, max_t: f32) -> (hit: bool, t: f32, normal: Vec3) {
-	v := [3]i32 {
+	v := [3]i32{
 		i32(math.floor(origin.x * TVOX_INV)),
 		i32(math.floor(origin.y * TVOX_INV)),
 		i32(math.floor(origin.z * TVOX_INV)),

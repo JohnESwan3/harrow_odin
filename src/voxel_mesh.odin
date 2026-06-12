@@ -26,6 +26,8 @@ Voxel_Vertex :: struct {
 	color:  [4]u8, // UBYTE4N
 }
 
+TBand :: [2]i32 // inclusive mesh-row range
+
 Mesh_Buffers :: struct {
 	vbuf, ibuf:   sg.Buffer,
 	num_idx:      int,
@@ -116,32 +118,77 @@ tile_remesh :: proc(key: Tile_Key) {
 		}
 	}
 
-	// vertical band (mesh rows): surface plus any edited chunks in this area
-	y0 := i32(math.floor((hmin - 0.6) / MCELL))
-	y1 := i32(math.ceil((hmax + 0.6) / MCELL))
+	// vertical bands (mesh rows): the surface skin, any cave systems found by
+	// a coarse probe, and edited chunks. Meshing only active bands keeps deep
+	// underground free while still rendering cave walls.
+	bands := make([dynamic]TBand, context.temp_allocator)
+	max_row := i32(WORLD_H / MCELL) - 1
+	append(&bands, TBand{i32(math.floor((hmin - 0.6) / MCELL)), i32(math.ceil((hmax + 0.6) / MCELL))})
+
+	probe_idx := [3]int{1, SN_S / 2, SN_S - 2}
+	for szc in probe_idx {
+		for sxc in probe_idx {
+			h := heights[szc * SN_S + sxc]
+			ppx := f32(base_cx + (i32(sxc) - 1) * MESH_STRIDE) * TVOX
+			ppz := f32(base_cz + (i32(szc) - 1) * MESH_STRIDE) * TVOX
+			for y := f32(2.0); y < h + 0.5; y += 0.75 {
+				if cave_sdf(Vec3{ppx, y, ppz}, h - y) < 1.2 {
+					r := i32(y / MCELL)
+					append(&bands, TBand{r - 4, r + 4})
+				}
+			}
+		}
+	}
+
 	has_edits := false
 	for ekey, _ in voxw.tedits {
 		if ekey.x >= key.x - 1 && ekey.x <= key.x + 1 && ekey.z >= key.y - 1 && ekey.z <= key.y + 1 {
 			has_edits = true
-			y0 = min(y0, ekey.y * CHUNK_N / MESH_STRIDE - 1)
-			y1 = max(y1, (ekey.y + 1) * CHUNK_N / MESH_STRIDE + 1)
+			append(&bands, TBand{ekey.y * CHUNK_N / MESH_STRIDE - 1, (ekey.y + 1) * CHUNK_N / MESH_STRIDE + 1})
 		}
 	}
-	y0 = max(y0, 1)
-	y1 = min(y1, i32(WORLD_H / MCELL) - 1)
-	ny := int(y1 - y0 + 1) // sample count in y
-	if ny < 2 do return
 
-	// density samples
-	ds := make([]f32, SN_S * SN_S * ny, context.temp_allocator)
+	for &b in bands {
+		b[0] = max(b[0], 1)
+		b[1] = min(b[1], max_row)
+	}
+	slice.sort_by(bands[:], proc(a, b: TBand) -> bool { return a[0] < b[0] })
+	merged := make([dynamic]TBand, context.temp_allocator)
+	for b in bands {
+		if b[1] < b[0] do continue
+		if len(merged) > 0 && b[0] <= merged[len(merged) - 1][1] + 2 {
+			merged[len(merged) - 1][1] = max(merged[len(merged) - 1][1], b[1])
+		} else {
+			append(&merged, b)
+		}
+	}
+
+	verts := make([dynamic]Voxel_Vertex, 0, 4096, context.temp_allocator)
+	indices := make([dynamic]u32, 0, 8192, context.temp_allocator)
 	di :: proc(sx, sy, sz, ny: int) -> int { return (sz * SN_S + sx) * ny + sy }
+	vi :: proc(cx, cy, cz, ncy: int) -> int { return (cz * SN_C + cx) * ncy + cy }
+	emit_quad :: proc(indices: ^[dynamic]u32, v0, v1, v2, v3: i32) {
+		if v0 < 0 || v1 < 0 || v2 < 0 || v3 < 0 do return
+		append(indices, u32(v0), u32(v1), u32(v2), u32(v0), u32(v2), u32(v3))
+	}
+
+	for band in merged {
+	y0 := band[0]
+	y1 := band[1]
+	ny := int(y1 - y0 + 1)
+	if ny < 2 do continue
+
+	// density samples for this band
+	ds := make([]f32, SN_S * SN_S * ny, context.temp_allocator)
 	for sz in 0 ..< SN_S {
 		for sx in 0 ..< SN_S {
 			h := heights[sz * SN_S + sx]
 			col := (sz * SN_S + sx) * ny
+			px := f32(base_cx + (i32(sx) - 1) * MESH_STRIDE) * TVOX
+			pz := f32(base_cz + (i32(sz) - 1) * MESH_STRIDE) * TVOX
 			if !has_edits {
 				for sy in 0 ..< ny {
-					ds[col + sy] = h - f32(y0 + i32(sy)) * MCELL
+					ds[col + sy] = density_from_h(h, Vec3{px, f32(y0 + i32(sy)) * MCELL, pz})
 				}
 			} else {
 				cx := base_cx + (i32(sx) - 1) * MESH_STRIDE
@@ -153,14 +200,10 @@ tile_remesh :: proc(key: Tile_Key) {
 		}
 	}
 
-	verts := make([dynamic]Voxel_Vertex, 0, 4096, context.temp_allocator)
-	indices := make([dynamic]u32, 0, 8192, context.temp_allocator)
-
 	// one vertex per sign-crossing cell
 	ncy := ny - 1
 	vert_idx := make([]i32, SN_C * SN_C * ncy, context.temp_allocator)
 	for &v in vert_idx do v = -1
-	vi :: proc(cx, cy, cz, ncy: int) -> int { return (cz * SN_C + cx) * ncy + cy }
 
 	for cz in 0 ..< SN_C {
 		for cx in 0 ..< SN_C {
@@ -232,12 +275,6 @@ tile_remesh :: proc(key: Tile_Key) {
 	}
 
 	// quads: one per sign-changing grid edge; connects the 4 adjacent cells.
-	// local corner coords: x/z 0..33 map to cells -1..32; we own x/z 1..32
-	// (global edges whose min corner lies inside this tile).
-	emit_quad :: proc(indices: ^[dynamic]u32, v0, v1, v2, v3: i32) {
-		if v0 < 0 || v1 < 0 || v2 < 0 || v3 < 0 do return
-		append(indices, u32(v0), u32(v1), u32(v2), u32(v0), u32(v2), u32(v3))
-	}
 	for sz in 1 ..< SN_S - 1 {
 		for sx in 1 ..< SN_S - 1 {
 			for sy in 0 ..< ny - 1 {
@@ -283,6 +320,7 @@ tile_remesh :: proc(key: Tile_Key) {
 			}
 		}
 	}
+	} // bands
 
 	m := mesh_upload(verts[:], indices[:])
 	if len(verts) > 0 {
@@ -312,6 +350,33 @@ structure_snapshot :: proc(key: Chunk_Key, snap: ^[SNAP * SNAP * SNAP]u8) {
 	for i in 0 ..< SNAP * SNAP * SNAP do snap[i] = 0
 	smin := base
 	smax := [3]i32{base.x + SNAP, base.y + SNAP, base.z + SNAP}
+
+	// trees: collect the few that can reach this chunk, then rasterize
+	wmin := Vec3{f32(smin.x) * SVOX, f32(smin.y) * SVOX, f32(smin.z) * SVOX}
+	wmax := Vec3{f32(smax.x) * SVOX, f32(smax.y) * SVOX, f32(smax.z) * SVOX}
+	trees: [8]Tree
+	ntrees := collect_trees(wmin, wmax, &trees)
+	if ntrees > 0 {
+		for y in 0 ..< SNAP {
+			for z in 0 ..< SNAP {
+				for x in 0 ..< SNAP {
+					p := Vec3{
+						(f32(smin.x + i32(x)) + 0.5) * SVOX,
+						(f32(smin.y + i32(y)) + 0.5) * SVOX,
+						(f32(smin.z + i32(z)) + 0.5) * SVOX,
+					}
+					for i in 0 ..< ntrees {
+						tm := tree_material(trees[i], p)
+						if tm != .Air {
+							snap[si(x, y, z)] = u8(tm)
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
 	for s in voxw.stamps {
 		if s.max.x <= smin.x || s.min.x >= smax.x ||
 		   s.max.y <= smin.y || s.min.y >= smax.y ||
@@ -479,17 +544,13 @@ chunk_remesh :: proc(key: Chunk_Key) {
 }
 
 // does this structure chunk possibly contain anything?
-chunk_has_structures :: proc(key: Chunk_Key) -> bool {
+chunk_has_structures :: proc(key: Chunk_Key, tree_y0, tree_y1: f32, any_tree: bool) -> bool {
 	if _, ok := voxw.sedits[key]; ok do return true
-	cmin := [3]i32{key.x * CHUNK_N, key.y * CHUNK_N, key.z * CHUNK_N}
-	cmax := [3]i32{cmin.x + CHUNK_N, cmin.y + CHUNK_N, cmin.z + CHUNK_N}
-	for s in voxw.stamps {
-		if s.max.x <= cmin.x || s.min.x >= cmax.x ||
-		   s.max.y <= cmin.y || s.min.y >= cmax.y ||
-		   s.max.z <= cmin.z || s.min.z >= cmax.z {
-			continue
-		}
-		return true
+	if voxw.stamp_chunks[key] do return true
+	if any_tree {
+		cy0 := f32(key.y) * SCHUNK_M
+		cy1 := cy0 + SCHUNK_M
+		if cy1 >= tree_y0 && cy0 <= tree_y1 do return true
 	}
 	return false
 }
@@ -538,18 +599,34 @@ voxel_stream :: proc(center: Vec3, dt: f32, sync_radius_m: f32 = 0) {
 				append(&vmesh.tile_queue, key)
 			}
 		}
-		// structure chunks (only where stamps/edits exist)
+		// structure chunks (only where stamps/edits/trees exist)
 		ccx := i32(math.floor(center.x / SCHUNK_M))
 		ccz := i32(math.floor(center.z / SCHUNK_M))
 		SR := i32(VIEW_RADIUS_M / SCHUNK_M) + 1
 		for dz in -SR ..= SR {
 			for dx in -SR ..= SR {
 				if dx * dx + dz * dz > SR * SR do continue
+				// tree vertical extent for this column, computed once
+				colx := f32(ccx + dx) * SCHUNK_M
+				colz := f32(ccz + dz) * SCHUNK_M
+				trees: [8]Tree
+				nt := collect_trees(
+					{colx, 0, colz},
+					{colx + SCHUNK_M, WORLD_H, colz + SCHUNK_M},
+					&trees,
+				)
+				ty0 := f32(1e9)
+				ty1 := f32(-1e9)
+				for i in 0 ..< nt {
+					t := trees[i]
+					ty0 = min(ty0, t.base.y)
+					ty1 = max(ty1, t.base.y + t.trunk_h + t.can_r * 1.4)
+				}
 				for cy in i32(0) ..< i32(WORLD_H / SCHUNK_M) {
 					key := Chunk_Key{ccx + dx, cy, ccz + dz}
 					if _, ok := vmesh.chunks[key]; ok do continue
 					if vmesh.chunk_queued[key] do continue
-					if !chunk_has_structures(key) {
+					if !chunk_has_structures(key, ty0, ty1, nt > 0) {
 						vmesh.chunks[key] = {} // record as empty, skip forever
 						continue
 					}
@@ -675,8 +752,7 @@ frustum_sphere_visible :: proc(f: Frustum, c: Vec3, r: f32) -> bool {
 	return true
 }
 
-TILE_BOUND_R :: 34.0  // 4 m x 64 m column half-diagonal
-CHUNK_BOUND_R :: 6.93 // 8 m cube half-diagonal
+CHUNK_BOUND_R :: 3.47 // 4 m cube half-diagonal
 
 voxel_draw :: proc(frustum: Frustum, vs: ^Vs_Params, fs: ^Fs_Params) {
 	vmesh.chunks_drawn = 0

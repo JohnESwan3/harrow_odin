@@ -32,3 +32,14 @@ Working log of major changes. One entry per commit-worthy milestone.
 
 - **Repo**: git initialized, progress.md started. Workflow from here: commit
   per major change, compile + test each step.
+- **World v3 — biomes & survival landscape**: mountain regions (peaks ~70 m,
+  world height raised to 112 m) with snow above a jittered snowline; forest
+  biome with procedural trees from a memoized hash grid (trunks + ragged
+  voxel canopies, fully destructible, ~2k trees per 600 m square in forest
+  zones); 3D-noise cave systems that breach hillsides (mesh tiles now mesh
+  multiple vertical bands: surface skin + probed cave bands); landmarks
+  (radio mast + service hut, buried bunker with cut entrance ramp, standing
+  stones). Bedrock is now destructible (toughness 6) — dig far enough and you
+  hit the void. Buildings/structures moved to 0.125 m voxels (same as
+  terrain). Verified via `-probe` dev flag (tree/mountain/snow/cave stats)
+  and in-game: 58 FPS @ 2.8 M tris, r=128 m. Save format bumped to HRW2.
