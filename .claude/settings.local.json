@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(odin version *)",
+      "PowerShell(Test-Path *)",
+      "WebFetch(domain:github.com)",
+      "PowerShell(curl.exe -L -sS -o \"$env:TEMP\\\\odin-dev-2026-06.zip\" \"https://github.com/odin-lang/Odin/releases/download/dev-2026-06/odin-windows-amd64-dev-2026-06.zip\" && Get-Item \"$env:TEMP\\\\odin-dev-2026-06.zip\" | Select-Object Length)",
+      "PowerShell(cmd /c \"`\"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\Common7\\\\Tools\\\\VsDevCmd.bat`\" -arch=amd64 -no_logo && cd /d `\"$env:TEMP\\\\sokol-odin\\\\sokol`\" && build_clibs_windows.cmd\" 2>&1 | Select-Object -Last 15)",
+      "PowerShell(New-Item *)",
+      "PowerShell(Get-ChildItem *)",
+      "PowerShell(Get-Content *)",
+      "PowerShell(Get-ChildItem \"C:\\\\odin\\\\dist\\\\vendor\\\\sdl3\" | Select-Object Name -First 20; Select-String -Path \"C:\\\\odin\\\\dist\\\\vendor\\\\sdl3\\\\sdl3_gamepad.odin\" -Pattern \"OpenGamepad|GetGamepadAxis|GetGamepadButton|GamepadAxis ::|GetGamepads\" | Select-Object -First 10 | ForEach-Object Line)",
+      "PowerShell(Select-String -Path \"C:\\\\Users\\\\johneswan3\\\\Documents\\\\Development\\\\games\\\\vibe-multiplayer\\\\src\\\\weapons.odin\" -Pattern \"recoil_pitch\" | ForEach-Object { \"$\\($_.LineNumber\\): $\\($_.Line.Trim\\(\\)\\)\" })",
+      "PowerShell(odin build \"C:\\\\Users\\\\johneswan3\\\\Documents\\\\Development\\\\games\\\\vibe-multiplayer\\\\src\" -out:\"C:\\\\Users\\\\johneswan3\\\\Documents\\\\Development\\\\games\\\\vibe-multiplayer\\\\harrow.exe\" -o:speed -subsystem:windows 2>&1)",
+      "PowerShell(Add-Type -AssemblyName System.Drawing; $src = [System.Drawing.Image]::FromFile\\(\"$env:TEMP\\\\harrow_sn1.png\"\\); $c = New-Object System.Drawing.Bitmap\\(620, 40\\); $g = [System.Drawing.Graphics]::FromImage\\($c\\); $g.DrawImage\\($src, \\(New-Object System.Drawing.Rectangle\\(0,0,620,40\\)\\), \\(New-Object System.Drawing.Rectangle\\(1300,0,620,40\\)\\), [System.Drawing.GraphicsUnit]::Pixel\\); $c.Save\\(\"$env:TEMP\\\\harrow_sn_fps.png\"\\); $src.Dispose\\(\\); \"saved\")",
+      "PowerShell(Get-Process harrow -ErrorAction SilentlyContinue)",
+      "PowerShell(Stop-Process -Force -Confirm:$false)",
+      "PowerShell(Get-Process *)"
+    ]
+  }
+}

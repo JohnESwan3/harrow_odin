@@ -1,0 +1,8 @@
+harrow.exe
+*.pdb
+*.exp
+*.lib
+!sokol/**/*.lib
+SDL3.dll
+settings.json
+world.sav
