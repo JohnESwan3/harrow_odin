@@ -25,8 +25,10 @@ UI_GOOD :: Vec4{0.48, 0.55, 0.36, 1}
 
 UI :: struct {
 	pip:         sgl.Pipeline,
-	w, h:        f32,
-	scale:       f32, // h / 720 reference scale
+	w, h:        f32,   // virtual canvas size (1280 * scale wide, screen_h tall)
+	screen_w:    f32,   // actual framebuffer width (for fullscreen effects)
+	x_off:       f32,   // pixels from screen left to virtual canvas left
+	scale:       f32,   // h / 720 reference scale
 	nav:         UI_Nav,
 	focus:       int,
 	item_count:  int,
@@ -62,12 +64,15 @@ ui_init :: proc() {
 }
 
 ui_begin :: proc(dt: f32) {
-	ui.w = sapp.widthf()
+	ui.screen_w = sapp.widthf()
 	ui.h = sapp.heightf()
 	ui.scale = ui.h / 720.0
+	ui.w = min(ui.screen_w, 1280.0 * ui.scale) // virtual 16:9 canvas width
+	ui.x_off = max((ui.screen_w - ui.w) * 0.5, 0) // center canvas on wider screens
 	ui.time += dt
 	ui.nav = ui_nav_poll(dt)
-	mouse := Vec2{input.mouse_x, input.mouse_y}
+	// store mouse in virtual canvas coordinates so widget hit-tests work uniformly
+	mouse := Vec2{input.mouse_x - ui.x_off, input.mouse_y}
 	ui.mouse_moved = vlen({mouse.x - ui.last_mouse.x, mouse.y - ui.last_mouse.y, 0}) > 2
 	ui.last_mouse = mouse
 	ui.item_count = 0
@@ -76,7 +81,8 @@ ui_begin :: proc(dt: f32) {
 	sgl.defaults()
 	sgl.load_pipeline(ui.pip)
 	sgl.matrix_mode_projection()
-	sgl.ortho(0, ui.w, ui.h, 0, -1, 1)
+	// shift the ortho so virtual x=0 lands at screen x=x_off
+	sgl.ortho(-ui.x_off, ui.screen_w - ui.x_off, ui.h, 0, -1, 1)
 	sgl.matrix_mode_modelview()
 	sgl.load_identity()
 }
@@ -116,11 +122,13 @@ ui_rect_outline :: proc(x, y, w, h, t: f32, c: Vec4) {
 // text drawn at pixel position with pixel-height sizing (8px glyph base)
 ui_text :: proc(x, y, px: f32, c: Vec4, str: string, font: int = 0) {
 	scale := px / 8.0
-	sdtx.canvas(ui.w / scale, ui.h / scale)
+	// sdtx maps its canvas to the full framebuffer, so use screen_w here.
+	// Adding x_off to the position aligns text with the sgl-shifted ortho.
+	sdtx.canvas(ui.screen_w / scale, ui.h / scale)
 	sdtx.origin(0, 0)
 	sdtx.font(font)
 	sdtx.color4f(c.r, c.g, c.b, c.a)
-	sdtx.pos(x / px, y / px)
+	sdtx.pos((x + ui.x_off) / px, y / px)
 	sdtx.puts(fmt.ctprintf("%s", str))
 }
 

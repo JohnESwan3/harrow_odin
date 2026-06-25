@@ -290,31 +290,31 @@ player_color :: proc(id: int) -> Vec4 {
 	return PLAYER_COLORS[int(game.colors[id]) % MAX_PLAYERS]
 }
 
-// greybox body; local player renders without a head (camera lives there)
+// greybox body. Local player is excluded from the color pass to avoid seeing
+// yourself in first-person; re-include in the future shadow pass so the body
+// still casts a shadow.
 player_push_body :: proc(p: ^Player, id: int, is_local: bool) {
 	if !p.alive do return
+	if is_local do return // hidden in first-person; shadow pass will include this
 	color := player_color(id)
 	dark := color * Vec4{0.55, 0.55, 0.55, 1}
 	base := p.pos
 	h := player_half(p)
 	body_h := h.y * 1.16
 	push_cube(mat4_trs(base + Vec3{0, -h.y + body_h * 0.5, 0}, p.yaw, 0, {0.58, body_h, 0.36}), color)
-	if !is_local {
-		head_y := -h.y + body_h + 0.18
-		push_cube(mat4_trs(base + Vec3{0, head_y, 0}, p.yaw, 0, {0.28, 0.30, 0.32}), dark)
-		visor_off := flat_forward(p.yaw) * 0.12
-		push_cube(mat4_trs(base + Vec3{0, head_y + 0.02, 0} + visor_off, p.yaw, 0, {0.20, 0.08, 0.10}), Vec4{0.55, 0.35, 0.15, 1})
-
-		def := weapon_defs[p.weapon]
-		eye := base + Vec3{0, -h.y + body_h * 0.82, 0}
-		grip := eye + dir_from_angles(p.yaw, p.pitch) * 0.55 + flat_right(p.yaw) * 0.22
-		for part in def.parts {
-			m := mat4_trs(grip, p.yaw, p.pitch, {1, 1, 1}) * mat4_translate(part.offset) * mat4_scale(part.size)
-			push_cube(m, part.color)
-		}
-		if p.firing_vis > 0 {
-			muzzle := grip + dir_from_angles(p.yaw, p.pitch) * 0.8
-			push_cube(mat4_trs(muzzle, p.yaw, 0, {0.12, 0.12, 0.12}), Vec4{1.0, 0.85, 0.4, 1})
-		}
+	head_y := -h.y + body_h + 0.18
+	push_cube(mat4_trs(base + Vec3{0, head_y, 0}, p.yaw, 0, {0.28, 0.30, 0.32}), dark)
+	visor_off := flat_forward(p.yaw) * 0.12
+	push_cube(mat4_trs(base + Vec3{0, head_y + 0.02, 0} + visor_off, p.yaw, 0, {0.20, 0.08, 0.10}), Vec4{0.55, 0.35, 0.15, 1})
+	def := weapon_defs[p.weapon]
+	eye := base + Vec3{0, -h.y + body_h * 0.82, 0}
+	grip := eye + dir_from_angles(p.yaw, p.pitch) * 0.55 + flat_right(p.yaw) * 0.22
+	for part in def.parts {
+		m := mat4_trs(grip, p.yaw, p.pitch, {1, 1, 1}) * mat4_translate(part.offset) * mat4_scale(part.size)
+		push_cube(m, part.color)
+	}
+	if p.firing_vis > 0 {
+		muzzle := grip + dir_from_angles(p.yaw, p.pitch) * 0.8
+		push_cube(mat4_trs(muzzle, p.yaw, 0, {0.12, 0.12, 0.12}), Vec4{1.0, 0.85, 0.4, 1})
 	}
 }

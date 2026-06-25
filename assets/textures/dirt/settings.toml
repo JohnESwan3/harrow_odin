@@ -1,0 +1,11 @@
+[base_color]
+resolution = 2048
+format = bc3
+
+[normal]
+resolution = 2048
+format = rgba
+
+[orm]
+resolution = 1024
+format = bc1

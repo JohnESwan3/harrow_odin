@@ -1,0 +1,12 @@
+# Snow has large smooth areas — lower res sufficient
+[base_color]
+resolution = 1024
+format = bc3
+
+[normal]
+resolution = 1024
+format = rgba
+
+[orm]
+resolution = 512
+format = bc1

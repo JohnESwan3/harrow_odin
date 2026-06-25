@@ -7,7 +7,6 @@ import "core:math"
 import "core:net"
 import "core:os"
 import "core:strconv"
-import win "core:sys/windows"
 import sapp "../sokol/app"
 import sg "../sokol/gfx"
 import slog "../sokol/log"
@@ -26,7 +25,7 @@ settings_load :: proc() {
 	if len(game.settings.player_name) == 0 {
 		game.settings.player_name = callsign_random()
 	}
-	game.settings.res_idx = clamp(game.settings.res_idx, 0, len(RESOLUTIONS) - 1)
+	// res_idx is clamped against the dynamic mode list inside display_update_modes.
 	game.settings.color_idx = clamp(game.settings.color_idx, 0, MAX_PLAYERS - 1)
 	game.name_len = copy(game.name_buf[:], game.settings.player_name)
 }
@@ -41,31 +40,17 @@ settings_save :: proc() {
 // ---- video settings ---------------------------------------------------------
 
 apply_resolution :: proc() {
-	if game.settings.fullscreen do return
-	res := RESOLUTIONS[clamp(game.settings.res_idx, 0, len(RESOLUTIONS) - 1)]
-	hwnd := win.HWND(sapp.win32_get_hwnd())
-	if hwnd == nil do return
-	style := win.GetWindowLongW(hwnd, win.GWL_STYLE)
-	rect := win.RECT{0, 0, res.x, res.y}
-	win.AdjustWindowRect(&rect, u32(style), win.FALSE)
-	win.SetWindowPos(hwnd, nil, 0, 0, rect.right - rect.left, rect.bottom - rect.top,
-		win.SWP_NOMOVE | win.SWP_NOZORDER)
+	if game.settings.fullscreen { return }
+	display_apply_windowed()
 }
 
 apply_display_mode :: proc() {
-	if sapp.is_fullscreen() != game.settings.fullscreen {
-		sapp.toggle_fullscreen()
+	if game.settings.fullscreen {
+		display_apply_fullscreen()
+	} else {
+		if sapp.is_fullscreen() { sapp.toggle_fullscreen() }
+		display_apply_windowed()
 	}
-	if !game.settings.fullscreen do apply_resolution()
-}
-
-display_refresh_hz :: proc() -> int {
-	dc := win.GetDC(nil)
-	if dc == nil do return 60
-	VREFRESH :: 116
-	hz := win.GetDeviceCaps(dc, VREFRESH)
-	win.ReleaseDC(nil, dc)
-	return int(hz)
 }
 
 request_quit :: proc() {
@@ -117,6 +102,9 @@ init_cb :: proc "c" () {
 	render_init()
 	ui_init()
 	input_init()
+	// Move/size the window to match the saved monitor + resolution now that
+	// the HWND exists (display_enumerate already ran in main()).
+	apply_display_mode()
 	voxel_world_init()
 	game.screen = .Main_Menu
 	game.tod = 0.35 // mid-morning
@@ -200,8 +188,9 @@ frame_cb :: proc "c" () {
 	w := sapp.widthf()
 	h := sapp.heightf()
 	render_world_pass(cam, w, h)
-	render_viewmodel_pass_begin(cam, w, h)
-	draw_screen(dt) // UI rendered inside the second pass
+	render_viewmodel_offscreen(cam, w, h)   // offscreen RT, near=0.01, CoC→alpha
+	render_dof_composite_begin(w, h)        // swapchain pass: DOF blur + stays open for UI
+	draw_screen(dt)
 	sg.end_pass()
 	sg.commit()
 
@@ -215,6 +204,7 @@ cleanup_cb :: proc "c" () {
 		voxel_save()
 	}
 	settings_save()
+	display_restore()
 	net_stop()
 	ui_shutdown()
 }
@@ -233,14 +223,15 @@ event_cb :: proc "c" (ev: ^sapp.Event) {
 
 main :: proc() {
 	settings_load()
-	res := RESOLUTIONS[game.settings.res_idx]
+	display_enumerate() // build monitor + mode list; clamps res/display indices
+	res := disp_state.modes[game.settings.res_idx] if disp_state.mode_count > 0 else Disp_Mode{1920, 1080}
 	sapp.run({
 		init_cb       = init_cb,
 		frame_cb      = frame_cb,
 		cleanup_cb    = cleanup_cb,
 		event_cb      = event_cb,
-		width         = res.x,
-		height        = res.y,
+		width         = res.w,
+		height        = res.h,
 		fullscreen    = game.settings.fullscreen,
 		sample_count  = 4,
 		swap_interval = game.settings.vsync ? 1 : 0,

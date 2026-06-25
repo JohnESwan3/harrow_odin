@@ -18,17 +18,20 @@ Screen :: enum {
 }
 
 Settings :: struct {
-	player_name: string,
-	color_idx:   int,
-	mouse_sens:  f32,
-	stick_sens:  f32,
-	invert_y:    bool,
-	fov:         f32,
-	show_fps:    bool,
-	fullscreen:  bool,
-	res_idx:     int,
-	vsync:       bool,
-	flash_idx:   int, // flashlight color preset
+	player_name:  string,
+	color_idx:    int,
+	mouse_sens:   f32,
+	stick_sens:   f32,
+	invert_y:     bool,
+	fov:          f32,
+	show_fps:     bool,
+	fullscreen:   bool,
+	res_idx:      int,  // index into disp_state.modes (clamped on load)
+	display_idx:  int,  // which monitor
+	refresh_idx:  int,  // which refresh rate
+	vsync:        bool,
+	flash_idx:    int,  // flashlight color preset
+	draw_dist:    f32,  // view radius in metres
 }
 
 FLASH_COLORS := [5]Vec3{
@@ -59,8 +62,9 @@ default_settings :: proc() -> Settings {
 		stick_sens  = 5.0,
 		fov         = 92,
 		show_fps    = true,
-		res_idx     = 1,
+		res_idx     = 0,
 		vsync       = true,
+		draw_dist   = 128.0,
 	}
 }
 

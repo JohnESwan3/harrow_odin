@@ -1,0 +1,12 @@
+# Metal needs higher-res ORM — roughness/metallic variation drives specular quality
+[base_color]
+resolution = 2048
+format = bc3
+
+[normal]
+resolution = 2048
+format = rgba
+
+[orm]
+resolution = 2048
+format = bc1

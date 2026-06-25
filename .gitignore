@@ -3,6 +3,6 @@ harrow.exe
 *.exp
 *.lib
 !sokol/**/*.lib
-SDL3.dll
 settings.json
 world.sav
+.claude

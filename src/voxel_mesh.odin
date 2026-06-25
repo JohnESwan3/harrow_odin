@@ -16,7 +16,12 @@ import sg "../sokol/gfx"
 //
 // Both produce the same vertex layout and draw with one pipeline.
 
-VIEW_RADIUS_M :: 128.0
+VIEW_RADIUS_M :: f32(128.0) // fallback; runtime value is game.settings.draw_dist
+
+view_radius :: proc() -> f32 {
+	if game.settings.draw_dist > 0 { return game.settings.draw_dist }
+	return VIEW_RADIUS_M
+}
 MESH_BUDGET_MS :: 5.0
 EVICT_MARGIN_M :: 24.0
 
@@ -82,16 +87,40 @@ SN_S :: MESH_CELLS + 2 // samples per axis (x/z)
 SN_C :: MESH_CELLS + 1 // cells per axis (x/z)
 
 terrain_vertex_color :: proc(p: Vec3, n: Vec3) -> [4]u8 {
-	mat := terrain_material(p - n * 0.1)
-	c := MAT_COLORS[mat]
-	h := vhash(i32(p.x * 8) * 7 + i32(p.y * 8) * 131, i32(p.z * 8) * 13)
-	f := 0.93 + h * 0.14
-	return {
-		u8(min(f32(c[0]) * f, 255)),
-		u8(min(f32(c[1]) * f, 255)),
-		u8(min(f32(c[2]) * f, 255)),
-		255,
+	probe := p - n * 0.1
+	mat_a := terrain_material(probe)
+
+	// Find the nearest material-boundary depth and blend toward the other side.
+	// Boundaries: 0.45 m (surface→dirt) and 2.4 m (dirt→rock).
+	// Blend zone is ±BLEND_R around each boundary; flat surfaces (depth ≈ 0) are unaffected.
+	SURF_BD :: f32(0.45)
+	DIRT_BD :: f32(2.40)
+	BLEND_R :: f32(0.38)
+
+	h     := terrain_height(probe.x, probe.z)
+	depth := h - probe.y
+
+	best_dist := f32(999)
+	sec_mat   := mat_a
+	boundaries := [2]f32{SURF_BD, DIRT_BD}
+	for bd in boundaries {
+		d := abs(depth - bd)
+		if d < BLEND_R && d < best_dist {
+			best_dist = d
+			// Sample 0.2 m on the opposite side of the boundary to get the other material.
+			other_y := h - (bd + (depth > bd ? f32(-0.2) : f32(0.2)))
+			sec_mat  = terrain_material({probe.x, other_y, probe.z})
+		}
 	}
+
+	blend_w: u8 = 0
+	if sec_mat != mat_a {
+		t := 1.0 - best_dist / BLEND_R
+		blend_w = u8(t * 127.5) // max 0.5 blend at boundary centre
+	}
+
+	// r = secondary material, g = blend weight, b = unused, a = primary material
+	return {u8(sec_mat), blend_w, 0, u8(mat_a)}
 }
 
 tile_remesh :: proc(key: Tile_Key) {
@@ -418,15 +447,9 @@ structure_snapshot :: proc(key: Chunk_Key, snap: ^[SNAP * SNAP * SNAP]u8) {
 }
 
 quad_tint :: proc(mat: Material, vx, vy, vz: i32) -> [4]u8 {
-	c := MAT_COLORS[mat]
-	h := vhash(vx * 7 + vy * 131, vz * 13 + vy * 31)
-	f := 0.93 + h * 0.14
-	return {
-		u8(min(f32(c[0]) * f, 255)),
-		u8(min(f32(c[1]) * f, 255)),
-		u8(min(f32(c[2]) * f, 255)),
-		255,
-	}
+	// r/g/b are now blend channels (secondary_mat, blend_weight, unused).
+	// Structure faces have no material blending for now, so r=g=b=0.
+	return {0, 0, 0, u8(mat)}
 }
 
 chunk_remesh :: proc(key: Chunk_Key) {
@@ -588,7 +611,7 @@ voxel_stream :: proc(center: Vec3, dt: f32, sync_radius_m: f32 = 0) {
 		vmesh.scan_timer = 0.5
 		vmesh.last_center = ctx_tile
 		// terrain tiles
-		TR := i32(VIEW_RADIUS_M / TCHUNK_M) + 1
+		TR := i32(view_radius() / TCHUNK_M) + 1
 		for dz in -TR ..= TR {
 			for dx in -TR ..= TR {
 				if dx * dx + dz * dz > TR * TR do continue
@@ -602,7 +625,7 @@ voxel_stream :: proc(center: Vec3, dt: f32, sync_radius_m: f32 = 0) {
 		// structure chunks (only where stamps/edits/trees exist)
 		ccx := i32(math.floor(center.x / SCHUNK_M))
 		ccz := i32(math.floor(center.z / SCHUNK_M))
-		SR := i32(VIEW_RADIUS_M / SCHUNK_M) + 1
+		SR := i32(view_radius() / SCHUNK_M) + 1
 		for dz in -SR ..= SR {
 			for dx in -SR ..= SR {
 				if dx * dx + dz * dz > SR * SR do continue
@@ -698,7 +721,7 @@ voxel_stream :: proc(center: Vec3, dt: f32, sync_radius_m: f32 = 0) {
 	vmesh.evict_timer -= dt
 	if vmesh.evict_timer <= 0 {
 		vmesh.evict_timer = 2.0
-		evict_r := f32(VIEW_RADIUS_M + EVICT_MARGIN_M)
+		evict_r := view_radius() + EVICT_MARGIN_M
 		evict_tiles := make([dynamic]Tile_Key, context.temp_allocator)
 		for key, _ in vmesh.tiles {
 			c := tile_center(key)
@@ -760,7 +783,13 @@ voxel_draw :: proc(frustum: Frustum, vs: ^Vs_Params, fs: ^Fs_Params) {
 	draw_one :: proc(m: Mesh_Buffers, vs: ^Vs_Params, fs: ^Fs_Params) {
 		sg.apply_bindings({
 			vertex_buffers = {0 = m.vbuf},
-			index_buffer = m.ibuf,
+			index_buffer   = m.ibuf,
+			views = {
+				VIEW_t_albedo = pbr.albedo_view,
+				VIEW_t_normal = pbr.normal_view,
+				VIEW_t_orm    = pbr.orm_view,
+			},
+			samplers = {SMP_smp = pbr.sampler},
 		})
 		sg.apply_uniforms(UB_vs_params, {ptr = vs, size = size_of(Vs_Params)})
 		sg.apply_uniforms(UB_fs_params, {ptr = fs, size = size_of(Fs_Params)})

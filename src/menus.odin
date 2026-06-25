@@ -9,8 +9,6 @@ import "core:net"
 GAME_TITLE :: "HARROW"
 GAME_BUILD :: "ALPHA 0.2 / INTERNAL"
 
-RESOLUTIONS := [?][2]i32{{1280, 720}, {1600, 900}, {1920, 1080}, {2560, 1440}}
-RES_NAMES := [?]string{"1280 X 720", "1600 X 900", "1920 X 1080", "2560 X 1440"}
 DISPLAY_NAMES := [?]string{"WINDOWED", "FULLSCREEN"}
 
 draw_screen :: proc(dt: f32) {
@@ -203,7 +201,7 @@ draw_settings :: proc() {
 	px := 540 * s
 	py := 90 * s
 	pw := 560 * s
-	ui_panel(px, py, pw, 620 * s, "OPTIONS")
+	ui_panel(px, py, pw, 680 * s, "OPTIONS")
 
 	fx := px + 30 * s
 	fw := pw - 60 * s
@@ -223,6 +221,8 @@ draw_settings :: proc() {
 	y += 48 * s
 	ui_toggle(fx, y, fw, 34 * s, "INVERT LOOK Y", &game.settings.invert_y)
 	y += 48 * s
+	ui_slider(fx, y, fw, 20 * s, "DRAW DISTANCE", &game.settings.draw_dist, 32, 512, "%.0f M")
+	y += 60 * s
 
 	if ui_button(fx, y, fw, 44 * s, "VIDEO") {
 		game.screen = .Settings_Video
@@ -243,24 +243,62 @@ draw_settings_video :: proc() {
 	draw_title_block()
 	s := ui.scale
 	px := 540 * s
-	py := 170 * s
+	py := 100 * s
 	pw := 560 * s
-	ui_panel(px, py, pw, 430 * s, "VIDEO")
+	ui_panel(px, py, pw, 590 * s, "VIDEO")
 
 	fx := px + 30 * s
 	fw := pw - 60 * s
 	y := py + 84 * s
 
+	// Monitor selector — dynamic names from SDL3.
+	mon_names: [MAX_DISPLAYS]string
+	for i in 0 ..< disp_state.display_count {
+		mon_names[i] = display_ui_name(i)
+	}
+	prev_disp := game.settings.display_idx
+	ui_selector(fx, y, fw, 36 * s, "MONITOR", mon_names[:disp_state.display_count], &game.settings.display_idx)
+	if game.settings.display_idx != prev_disp {
+		display_update_modes()
+		apply_display_mode()
+	}
+	y += 54 * s
+
+	// Fullscreen toggle.
 	disp_idx := game.settings.fullscreen ? 1 : 0
 	if ui_selector(fx, y, fw, 36 * s, "DISPLAY", DISPLAY_NAMES[:], &disp_idx) {
 		game.settings.fullscreen = disp_idx == 1
 		apply_display_mode()
 	}
 	y += 54 * s
-	if ui_selector(fx, y, fw, 36 * s, "RESOLUTION", RES_NAMES[:], &game.settings.res_idx) {
+
+	// Resolution — dynamic list for the selected monitor.
+	res_names: [MAX_RES_MODES]string
+	for i in 0 ..< disp_state.mode_count {
+		res_names[i] = mode_ui_name(i)
+	}
+	prev_res := game.settings.res_idx
+	ui_selector(fx, y, fw, 36 * s, "RESOLUTION", res_names[:disp_state.mode_count], &game.settings.res_idx)
+	if game.settings.res_idx != prev_res {
+		display_update_refreshes()
 		apply_resolution()
 	}
 	y += 54 * s
+
+	// Refresh rate — only relevant in fullscreen.
+	if disp_state.refresh_count > 0 {
+		hz_names: [16]string
+		for i in 0 ..< disp_state.refresh_count {
+			hz_names[i] = refresh_ui_name(disp_state.refreshes[i])
+		}
+		prev_hz := game.settings.refresh_idx
+		ui_selector(fx, y, fw, 36 * s, "REFRESH RATE", hz_names[:disp_state.refresh_count], &game.settings.refresh_idx)
+		if game.settings.refresh_idx != prev_hz && game.settings.fullscreen {
+			apply_display_mode()
+		}
+	}
+	y += 54 * s
+
 	vs := game.settings.vsync
 	ui_toggle(fx, y, fw, 34 * s, "VSYNC", &game.settings.vsync)
 	if vs != game.settings.vsync do game.vsync_changed = true
@@ -268,11 +306,10 @@ draw_settings_video :: proc() {
 	ui_toggle(fx, y, fw, 34 * s, "FPS COUNTER", &game.settings.show_fps)
 	y += 56 * s
 
-	ui_text(fx, y, 12 * s, UI_TEXT_DIM, fmt.tprintf("DISPLAY %d HZ", display_refresh_hz()))
 	if game.vsync_changed {
-		ui_text(fx, y + 20 * s, 12 * s, UI_WARN, "VSYNC CHANGE APPLIES AFTER RESTART")
+		ui_text(fx, y, 12 * s, UI_WARN, "VSYNC CHANGE APPLIES AFTER RESTART")
+		y += 24 * s
 	}
-	y += 54 * s
 
 	if ui_button(fx, y, fw, 44 * s, "BACK") || (ui.nav.back && ui.hot_field < 0) {
 		settings_save()
@@ -302,7 +339,7 @@ draw_ingame :: proc() {
 
 draw_pause_menu :: proc() {
 	s := ui.scale
-	ui_rect(0, 0, ui.w, ui.h, Vec4{0.01, 0.01, 0.01, 0.65})
+	ui_rect(-ui.x_off, 0, ui.screen_w, ui.h, Vec4{0.01, 0.01, 0.01, 0.65})
 	px := ui.w * 0.5 - 220 * s
 	py := 140 * s
 	ui_panel(px, py, 440 * s, 300 * s, "PAUSED")
@@ -358,15 +395,15 @@ draw_pause_menu :: proc() {
 draw_hud :: proc(p: ^Player) {
 	s := ui.scale
 
-	// damage vignette
+	// damage vignette — spans the full framebuffer so red edges appear everywhere
 	if game.damage_flash > 0.01 {
 		a := min(game.damage_flash, 1) * 0.42
 		t := 70 * s
 		c := Vec4{0.45, 0.04, 0.02, a}
-		ui_rect(0, 0, ui.w, t, c)
-		ui_rect(0, ui.h - t, ui.w, t, c)
-		ui_rect(0, t, t, ui.h - 2 * t, c)
-		ui_rect(ui.w - t, t, t, ui.h - 2 * t, c)
+		ui_rect(-ui.x_off, 0, ui.screen_w, t, c)
+		ui_rect(-ui.x_off, ui.h - t, ui.screen_w, t, c)
+		ui_rect(-ui.x_off, t, t, ui.h - 2 * t, c)
+		ui_rect(-ui.x_off + ui.screen_w - t, t, t, ui.h - 2 * t, c)
 	}
 
 	if !p.alive {
@@ -405,15 +442,14 @@ draw_hud :: proc(p: ^Player) {
 	if scoped {
 		ui_rect(cx - 1 * s, cy - 70 * s, 2 * s, 140 * s, Vec4{0.75, 0.75, 0.72, 0.75})
 		ui_rect(cx - 70 * s, cy - 1 * s, 140 * s, 2 * s, Vec4{0.75, 0.75, 0.72, 0.75})
-		// scope surround
-		half_w := ui.w * 0.5
+		// scope surround — must black out the full framebuffer, not just the virtual canvas
 		half_h := ui.h * 0.5
 		r := 150 * s
 		dark := Vec4{0.01, 0.01, 0.01, 0.94}
-		ui_rect(0, 0, ui.w, half_h - r, dark)
-		ui_rect(0, half_h + r, ui.w, half_h - r, dark)
-		ui_rect(0, half_h - r, half_w - r, r * 2, dark)
-		ui_rect(half_w + r, half_h - r, half_w - r, r * 2, dark)
+		ui_rect(-ui.x_off, 0, ui.screen_w, half_h - r, dark)
+		ui_rect(-ui.x_off, half_h + r, ui.screen_w, half_h - r, dark)
+		ui_rect(-ui.x_off, half_h - r, cx - r + ui.x_off, r * 2, dark)
+		ui_rect(cx + r, half_h - r, ui.screen_w - cx - r - ui.x_off, r * 2, dark)
 		ui_text(cx + 120 * s, cy - 146 * s, 11 * s, UI_TEXT_DIM, fmt.tprintf("%.1fX", def.ads_zoom))
 	} else if p.ads_t > 0.4 {
 		// minimal dot while aiming
