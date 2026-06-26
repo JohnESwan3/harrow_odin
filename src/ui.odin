@@ -24,19 +24,19 @@ UI_PANEL_LIGHT :: Vec4{0.075, 0.078, 0.080, 0.95}
 UI_GOOD :: Vec4{0.48, 0.55, 0.36, 1}
 
 UI :: struct {
-	pip:         sgl.Pipeline,
-	w, h:        f32,   // virtual canvas size (1280 * scale wide, screen_h tall)
-	screen_w:    f32,   // actual framebuffer width (for fullscreen effects)
-	x_off:       f32,   // pixels from screen left to virtual canvas left
-	scale:       f32,   // h / 720 reference scale
-	nav:         UI_Nav,
-	focus:       int,
-	item_count:  int,
-	hot_field:   int, // index of focused text field, -1 none
-	field_count: int,
-	mouse_moved: bool,
-	last_mouse:  Vec2,
-	time:        f32,
+	pip:                  sgl.Pipeline,
+	w, h:                 f32, // virtual canvas (1280 × 720 scaled — all widget coords live here)
+	screen_w, screen_h:   f32, // actual framebuffer dimensions (for fullscreen overlays)
+	x_off, y_off:         f32, // pixel offset from screen edge to virtual canvas top-left
+	scale:                f32, // min(screen_w/1280, screen_h/720) — contain-fit scaling
+	nav:                  UI_Nav,
+	focus:                int,
+	item_count:           int,
+	hot_field:            int,
+	field_count:          int,
+	mouse_moved:          bool,
+	last_mouse:           Vec2,
+	time:                 f32,
 }
 
 ui: UI
@@ -65,14 +65,18 @@ ui_init :: proc() {
 
 ui_begin :: proc(dt: f32) {
 	ui.screen_w = sapp.widthf()
-	ui.h = sapp.heightf()
-	ui.scale = ui.h / 720.0
-	ui.w = min(ui.screen_w, 1280.0 * ui.scale) // virtual 16:9 canvas width
-	ui.x_off = max((ui.screen_w - ui.w) * 0.5, 0) // center canvas on wider screens
+	ui.screen_h = sapp.heightf()
+	// Contain-fit: scale so the 1280×720 reference canvas fits entirely on screen.
+	// Widescreen (>16:9) gets pillar bars; tall screens (4:3) get letter bars.
+	ui.scale = min(ui.screen_w / 1280.0, ui.screen_h / 720.0)
+	ui.w     = 1280.0 * ui.scale
+	ui.h     = 720.0  * ui.scale
+	ui.x_off = (ui.screen_w - ui.w) * 0.5
+	ui.y_off = (ui.screen_h - ui.h) * 0.5
 	ui.time += dt
 	ui.nav = ui_nav_poll(dt)
-	// store mouse in virtual canvas coordinates so widget hit-tests work uniformly
-	mouse := Vec2{input.mouse_x - ui.x_off, input.mouse_y}
+	// Mouse in virtual canvas coords so all widget hit-tests are canvas-relative.
+	mouse := Vec2{input.mouse_x - ui.x_off, input.mouse_y - ui.y_off}
 	ui.mouse_moved = vlen({mouse.x - ui.last_mouse.x, mouse.y - ui.last_mouse.y, 0}) > 2
 	ui.last_mouse = mouse
 	ui.item_count = 0
@@ -81,8 +85,8 @@ ui_begin :: proc(dt: f32) {
 	sgl.defaults()
 	sgl.load_pipeline(ui.pip)
 	sgl.matrix_mode_projection()
-	// shift the ortho so virtual x=0 lands at screen x=x_off
-	sgl.ortho(-ui.x_off, ui.screen_w - ui.x_off, ui.h, 0, -1, 1)
+	// ortho: virtual (0,0) → screen (x_off, y_off); virtual (w,h) → screen (x_off+w, y_off+h)
+	sgl.ortho(-ui.x_off, ui.w + ui.x_off, ui.h + ui.y_off, -ui.y_off, -1, 1)
 	sgl.matrix_mode_modelview()
 	sgl.load_identity()
 }
@@ -122,13 +126,14 @@ ui_rect_outline :: proc(x, y, w, h, t: f32, c: Vec4) {
 // text drawn at pixel position with pixel-height sizing (8px glyph base)
 ui_text :: proc(x, y, px: f32, c: Vec4, str: string, font: int = 0) {
 	scale := px / 8.0
-	// sdtx maps its canvas to the full framebuffer, so use screen_w here.
-	// Adding x_off to the position aligns text with the sgl-shifted ortho.
-	sdtx.canvas(ui.screen_w / scale, ui.h / scale)
+	// sdtx maps its canvas to the FULL framebuffer, independent of sgl's ortho.
+	// Use screen_w/screen_h so one sdtx unit = one screen pixel.
+	// Add x_off/y_off so the text lands at the same virtual-canvas position as sgl rects.
+	sdtx.canvas(ui.screen_w / scale, ui.screen_h / scale)
 	sdtx.origin(0, 0)
 	sdtx.font(font)
 	sdtx.color4f(c.r, c.g, c.b, c.a)
-	sdtx.pos((x + ui.x_off) / px, y / px)
+	sdtx.pos((x + ui.x_off) / px, (y + ui.y_off) / px)
 	sdtx.puts(fmt.ctprintf("%s", str))
 }
 

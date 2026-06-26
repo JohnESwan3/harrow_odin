@@ -199,37 +199,37 @@ draw_settings :: proc() {
 	draw_title_block()
 	s := ui.scale
 	px := 540 * s
-	py := 90 * s
+	py := 48 * s  // start close to top — panel must fit in 720 virtual units
 	pw := 560 * s
-	ui_panel(px, py, pw, 680 * s, "OPTIONS")
+	ui_panel(px, py, pw, 666 * s, "OPTIONS")  // bottom at 714 — within 720 canvas
 
 	fx := px + 30 * s
 	fw := pw - 60 * s
-	y := py + 104 * s
+	y := py + 80 * s
 
-	ui_text_field(fx, y, fw, 40 * s, "CALLSIGN", game.name_buf[:], &game.name_len)
-	y += 76 * s
-	ui_swatches(fx, y, fw, 26 * s, "SQUAD COLOR", &game.settings.color_idx)
-	y += 60 * s
-	ui_slider(fx, y, fw, 20 * s, "MOUSE SENSITIVITY", &game.settings.mouse_sens, 0.5, 10, "%.1f")
-	y += 60 * s
-	ui_slider(fx, y, fw, 20 * s, "STICK SENSITIVITY", &game.settings.stick_sens, 1, 10, "%.1f")
-	y += 60 * s
-	ui_slider(fx, y, fw, 20 * s, "FIELD OF VIEW", &game.settings.fov, 70, 110, "%.0f")
+	ui_text_field(fx, y, fw, 38 * s, "CALLSIGN", game.name_buf[:], &game.name_len)
+	y += 68 * s
+	ui_swatches(fx, y, fw, 24 * s, "SQUAD COLOR", &game.settings.color_idx)
+	y += 52 * s
+	ui_slider(fx, y, fw, 18 * s, "MOUSE SENSITIVITY", &game.settings.mouse_sens, 0.5, 10, "%.1f")
 	y += 50 * s
-	ui_selector(fx, y, fw, 34 * s, "FLASHLIGHT", FLASH_NAMES[:], &game.settings.flash_idx)
-	y += 48 * s
-	ui_toggle(fx, y, fw, 34 * s, "INVERT LOOK Y", &game.settings.invert_y)
-	y += 48 * s
-	ui_slider(fx, y, fw, 20 * s, "DRAW DISTANCE", &game.settings.draw_dist, 32, 512, "%.0f M")
-	y += 60 * s
+	ui_slider(fx, y, fw, 18 * s, "STICK SENSITIVITY", &game.settings.stick_sens, 1, 10, "%.1f")
+	y += 50 * s
+	ui_slider(fx, y, fw, 18 * s, "FIELD OF VIEW", &game.settings.fov, 70, 110, "%.0f")
+	y += 46 * s
+	ui_selector(fx, y, fw, 30 * s, "FLASHLIGHT", FLASH_NAMES[:], &game.settings.flash_idx)
+	y += 42 * s
+	ui_toggle(fx, y, fw, 30 * s, "INVERT LOOK Y", &game.settings.invert_y)
+	y += 42 * s
+	ui_slider(fx, y, fw, 18 * s, "DRAW DISTANCE", &game.settings.draw_dist, 32, 512, "%.0f M")
+	y += 52 * s
 
-	if ui_button(fx, y, fw, 44 * s, "VIDEO") {
+	if ui_button(fx, y, fw, 42 * s, "VIDEO") {
 		game.screen = .Settings_Video
 		ui_reset_focus()
 	}
-	y += 58 * s
-	if ui_button(fx, y, fw, 44 * s, "DONE") || (ui.nav.back && ui.hot_field < 0) {
+	y += 54 * s
+	if ui_button(fx, y, fw, 42 * s, "DONE") || (ui.nav.back && ui.hot_field < 0) {
 		settings_apply_name()
 		settings_save()
 		game.screen = game.settings_return
@@ -243,13 +243,13 @@ draw_settings_video :: proc() {
 	draw_title_block()
 	s := ui.scale
 	px := 540 * s
-	py := 100 * s
+	py := 48 * s
 	pw := 560 * s
-	ui_panel(px, py, pw, 590 * s, "VIDEO")
+	ui_panel(px, py, pw, 596 * s, "VIDEO")  // bottom at 644 — within 720 canvas
 
 	fx := px + 30 * s
 	fw := pw - 60 * s
-	y := py + 84 * s
+	y := py + 80 * s
 
 	// Monitor selector — dynamic names from SDL3.
 	mon_names: [MAX_DISPLAYS]string
@@ -257,20 +257,20 @@ draw_settings_video :: proc() {
 		mon_names[i] = display_ui_name(i)
 	}
 	prev_disp := game.settings.display_idx
-	ui_selector(fx, y, fw, 36 * s, "MONITOR", mon_names[:disp_state.display_count], &game.settings.display_idx)
+	ui_selector(fx, y, fw, 30 * s, "MONITOR", mon_names[:disp_state.display_count], &game.settings.display_idx)
 	if game.settings.display_idx != prev_disp {
 		display_update_modes()
 		apply_display_mode()
 	}
-	y += 54 * s
+	y += 50 * s
 
 	// Fullscreen toggle.
 	disp_idx := game.settings.fullscreen ? 1 : 0
-	if ui_selector(fx, y, fw, 36 * s, "DISPLAY", DISPLAY_NAMES[:], &disp_idx) {
+	if ui_selector(fx, y, fw, 30 * s, "DISPLAY", DISPLAY_NAMES[:], &disp_idx) {
 		game.settings.fullscreen = disp_idx == 1
 		apply_display_mode()
 	}
-	y += 54 * s
+	y += 50 * s
 
 	// Resolution — dynamic list for the selected monitor.
 	res_names: [MAX_RES_MODES]string
@@ -278,12 +278,12 @@ draw_settings_video :: proc() {
 		res_names[i] = mode_ui_name(i)
 	}
 	prev_res := game.settings.res_idx
-	ui_selector(fx, y, fw, 36 * s, "RESOLUTION", res_names[:disp_state.mode_count], &game.settings.res_idx)
+	ui_selector(fx, y, fw, 30 * s, "RESOLUTION", res_names[:disp_state.mode_count], &game.settings.res_idx)
 	if game.settings.res_idx != prev_res {
 		display_update_refreshes()
 		apply_resolution()
 	}
-	y += 54 * s
+	y += 50 * s
 
 	// Refresh rate — only relevant in fullscreen.
 	if disp_state.refresh_count > 0 {
@@ -292,26 +292,26 @@ draw_settings_video :: proc() {
 			hz_names[i] = refresh_ui_name(disp_state.refreshes[i])
 		}
 		prev_hz := game.settings.refresh_idx
-		ui_selector(fx, y, fw, 36 * s, "REFRESH RATE", hz_names[:disp_state.refresh_count], &game.settings.refresh_idx)
+		ui_selector(fx, y, fw, 30 * s, "REFRESH RATE", hz_names[:disp_state.refresh_count], &game.settings.refresh_idx)
 		if game.settings.refresh_idx != prev_hz && game.settings.fullscreen {
 			apply_display_mode()
 		}
 	}
-	y += 54 * s
+	y += 50 * s
 
 	vs := game.settings.vsync
-	ui_toggle(fx, y, fw, 34 * s, "VSYNC", &game.settings.vsync)
+	ui_toggle(fx, y, fw, 30 * s, "VSYNC", &game.settings.vsync)
 	if vs != game.settings.vsync do game.vsync_changed = true
-	y += 50 * s
-	ui_toggle(fx, y, fw, 34 * s, "FPS COUNTER", &game.settings.show_fps)
-	y += 56 * s
+	y += 44 * s
+	ui_toggle(fx, y, fw, 30 * s, "FPS COUNTER", &game.settings.show_fps)
+	y += 44 * s
 
 	if game.vsync_changed {
 		ui_text(fx, y, 12 * s, UI_WARN, "VSYNC CHANGE APPLIES AFTER RESTART")
 		y += 24 * s
 	}
 
-	if ui_button(fx, y, fw, 44 * s, "BACK") || (ui.nav.back && ui.hot_field < 0) {
+	if ui_button(fx, y, fw, 42 * s, "BACK") || (ui.nav.back && ui.hot_field < 0) {
 		settings_save()
 		game.screen = .Settings
 		ui_reset_focus()
@@ -337,16 +337,22 @@ draw_ingame :: proc() {
 	draw_hud(p)
 }
 
+@(private)
+reset_confirm_open: bool
+
 draw_pause_menu :: proc() {
 	s := ui.scale
-	ui_rect(-ui.x_off, 0, ui.screen_w, ui.h, Vec4{0.01, 0.01, 0.01, 0.65})
+	ui_rect(-ui.x_off, -ui.y_off, ui.screen_w, ui.screen_h, Vec4{0.01, 0.01, 0.01, 0.65})
+
+	is_solo := nett.role == .None
+	panel_h := f32(360 if is_solo else 300) * s
 	px := ui.w * 0.5 - 220 * s
 	py := 140 * s
-	ui_panel(px, py, 440 * s, 300 * s, "PAUSED")
+	ui_panel(px, py, 440 * s, panel_h, "PAUSED")
 	fx := px + 30 * s
 	fw := 380 * s
 	y := py + 72 * s
-	if ui_button(fx, y, fw, 46 * s, "RESUME") || ui.nav.back {
+	if ui_button(fx, y, fw, 46 * s, "RESUME") || (ui.nav.back && !reset_confirm_open) {
 		game.paused = false
 	}
 	y += 60 * s
@@ -359,13 +365,18 @@ draw_pause_menu :: proc() {
 	if ui_button(fx, y, fw, 46 * s, "ABANDON") {
 		game_leave_session("")
 	}
-	if nett.role != .None {
+	if is_solo {
+		y += 60 * s
+		if ui_button(fx, y, fw, 46 * s, "RESET WORLD") {
+			reset_confirm_open = true
+		}
+	} else {
 		ui_text(fx, py + 264 * s, 11 * s, UI_TEXT_DIM, "SESSION CONTINUES WHILE PAUSED")
 	}
 
 	// control reference for the active device
 	cx := px + 470 * s
-	ui_panel(cx, py, 360 * s, 300 * s, "CONTROLS")
+	ui_panel(cx, py, 360 * s, panel_h, "CONTROLS")
 	ref_kbm := [?][2]string{
 		{"MOVE", "WASD"}, {"SPRINT", "SHIFT"}, {"AIM", "RMB"}, {"FIRE", "LMB"},
 		{"RELOAD", "R"}, {"GRENADE", "G"}, {"MELEE", "V"}, {"CROUCH", "CTRL"},
@@ -390,20 +401,39 @@ draw_pause_menu :: proc() {
 			ry += 22 * s
 		}
 	}
+
+	if reset_confirm_open {
+		// modal confirmation — dim everything and show centred dialog
+		ui_rect(-ui.x_off, -ui.y_off, ui.screen_w, ui.screen_h, Vec4{0, 0, 0, 0.55})
+		cpx := ui.w * 0.5 - 200 * s
+		cpy := ui.h * 0.5 - 90 * s
+		ui_panel(cpx, cpy, 400 * s, 180 * s, "RESET WORLD")
+		ui_text(cpx + 30 * s, cpy + 76 * s, 12 * s, UI_WARN, "ALL WORLD CHANGES WILL BE LOST")
+		bw := 160 * s
+		if ui_button(cpx + 30 * s, cpy + 114 * s, bw, 42 * s, "CANCEL") || ui.nav.back {
+			reset_confirm_open = false
+		}
+		if ui_button(cpx + 210 * s, cpy + 114 * s, bw, 42 * s, "CONFIRM") {
+			reset_confirm_open = false
+			voxel_world_reset()
+			game_session_reset()
+			game_begin_local(game.local_id)
+		}
+	}
 }
 
 draw_hud :: proc(p: ^Player) {
 	s := ui.scale
 
-	// damage vignette — spans the full framebuffer so red edges appear everywhere
+	// damage vignette — spans full framebuffer including pillar/letter bars
 	if game.damage_flash > 0.01 {
 		a := min(game.damage_flash, 1) * 0.42
 		t := 70 * s
 		c := Vec4{0.45, 0.04, 0.02, a}
-		ui_rect(-ui.x_off, 0, ui.screen_w, t, c)
-		ui_rect(-ui.x_off, ui.h - t, ui.screen_w, t, c)
-		ui_rect(-ui.x_off, t, t, ui.h - 2 * t, c)
-		ui_rect(-ui.x_off + ui.screen_w - t, t, t, ui.h - 2 * t, c)
+		ui_rect(-ui.x_off, -ui.y_off, ui.screen_w, t, c)
+		ui_rect(-ui.x_off, ui.h + ui.y_off - t, ui.screen_w, t, c)
+		ui_rect(-ui.x_off, -ui.y_off + t, t, ui.screen_h - 2 * t, c)
+		ui_rect(-ui.x_off + ui.screen_w - t, -ui.y_off + t, t, ui.screen_h - 2 * t, c)
 	}
 
 	if !p.alive {
@@ -442,14 +472,13 @@ draw_hud :: proc(p: ^Player) {
 	if scoped {
 		ui_rect(cx - 1 * s, cy - 70 * s, 2 * s, 140 * s, Vec4{0.75, 0.75, 0.72, 0.75})
 		ui_rect(cx - 70 * s, cy - 1 * s, 140 * s, 2 * s, Vec4{0.75, 0.75, 0.72, 0.75})
-		// scope surround — must black out the full framebuffer, not just the virtual canvas
-		half_h := ui.h * 0.5
+		// scope surround — blacks out full framebuffer outside the scope circle
 		r := 150 * s
 		dark := Vec4{0.01, 0.01, 0.01, 0.94}
-		ui_rect(-ui.x_off, 0, ui.screen_w, half_h - r, dark)
-		ui_rect(-ui.x_off, half_h + r, ui.screen_w, half_h - r, dark)
-		ui_rect(-ui.x_off, half_h - r, cx - r + ui.x_off, r * 2, dark)
-		ui_rect(cx + r, half_h - r, ui.screen_w - cx - r - ui.x_off, r * 2, dark)
+		ui_rect(-ui.x_off, -ui.y_off, ui.screen_w, cy - r + ui.y_off, dark)
+		ui_rect(-ui.x_off, cy + r, ui.screen_w, ui.h + ui.y_off - cy - r, dark)
+		ui_rect(-ui.x_off, cy - r, cx - r + ui.x_off, r * 2, dark)
+		ui_rect(cx + r, cy - r, ui.screen_w - cx - r - ui.x_off, r * 2, dark)
 		ui_text(cx + 120 * s, cy - 146 * s, 11 * s, UI_TEXT_DIM, fmt.tprintf("%.1fX", def.ads_zoom))
 	} else if p.ads_t > 0.4 {
 		// minimal dot while aiming

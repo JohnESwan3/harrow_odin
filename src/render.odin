@@ -371,19 +371,26 @@ render_uniforms :: proc(cam: Camera, aspect: f32) -> (Vs_Params, Fs_Params) {
 	return vs, fs
 }
 
-// pass 1: world + dynamic instances, clears to fog color
+// pass 1: world + dynamic instances into the shared scene RT (same target as viewmodel pass).
+// By rendering the world here, near-DOF CoC in vox_fs also blurs world geometry close to camera.
 render_world_pass :: proc(cam: Camera, width, height: f32) {
 	fc := renderer.light.fog_color
 	sky := Vec3{
 		1.0 - (1.0 - fc.x) * (1.0 - fc.x),
 		1.0 - (1.0 - fc.y) * (1.0 - fc.y),
 		1.0 - (1.0 - fc.z) * (1.0 - fc.z),
-	} // cheap gamma-ish match with fog curve in shader
+	}
+	// Ensure the scene RT exists before the world pass so the viewmodel pass can LOAD it.
+	ensure_vm_rt(i32(width), i32(height))
 	sg.begin_pass({
 		action = {
 			colors = {0 = {load_action = .CLEAR, clear_value = {sky.x, sky.y, sky.z, 1}}},
+			depth  = {load_action = .CLEAR, clear_value = 1.0},
 		},
-		swapchain = sglue.swapchain(),
+		attachments = {
+			colors        = {0 = vm_rt.color_att},
+			depth_stencil = vm_rt.depth_att,
+		},
 	})
 	vs, fs := render_uniforms(cam, width / height)
 
@@ -423,16 +430,14 @@ render_world_pass :: proc(cam: Camera, width, height: f32) {
 
 viewmodel_inst: sg.Buffer // stream buffer for viewmodel cubes
 
-// pass 2: render viewmodel to offscreen RT with near=0.01, CoC in alpha.
-// Ends the pass — caller follows with render_dof_composite_begin.
+// pass 2: render viewmodel on top of the world in the same scene RT.
+// LOADs world color so nothing is erased, CLEARs depth so weapon is always in front.
 render_viewmodel_offscreen :: proc(cam: Camera, width, height: f32) {
-	w := i32(width)
-	h := i32(height)
-	ensure_vm_rt(w, h)
+	ensure_vm_rt(i32(width), i32(height)) // no-op if already correct size
 	sg.begin_pass({
 		action = {
-			colors = {0 = {load_action = .CLEAR, clear_value = {0, 0, 0, 0}}},
-			depth  = {load_action = .CLEAR, clear_value = 1.0},
+			colors = {0 = {load_action = .LOAD}},          // keep world pixels
+			depth  = {load_action = .CLEAR, clear_value = 1.0}, // weapon never clips behind walls
 		},
 		attachments = {
 			colors        = {0 = vm_rt.color_att},
@@ -462,11 +467,12 @@ render_viewmodel_offscreen :: proc(cam: Camera, width, height: f32) {
 	sg.end_pass()
 }
 
-// pass 3: composite the DOF viewmodel over the world, then stay open for UI.
+// pass 3: DOF-composite the scene RT onto the swapchain, then stay open for UI.
+// World is no longer pre-rendered onto the swapchain, so we CLEAR it here.
 render_dof_composite_begin :: proc(width, height: f32) {
 	sg.begin_pass({
 		action = {
-			colors = {0 = {load_action = .LOAD}},
+			colors = {0 = {load_action = .CLEAR, clear_value = {0, 0, 0, 1}}},
 			depth  = {load_action = .CLEAR, clear_value = 1.0},
 		},
 		swapchain = sglue.swapchain(),

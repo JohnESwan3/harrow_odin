@@ -611,6 +611,11 @@ voxel_load :: proc() {
 	}
 }
 
+voxel_world_reset :: proc() {
+	os.remove(WORLD_SAVE)
+	voxel_world_init() // clears op_log then re-runs generation; load skips (no file)
+}
+
 // ---- world generation -----------------------------------------------------------
 
 stamp_box_m :: proc(min, max: Vec3, mat: Material) {

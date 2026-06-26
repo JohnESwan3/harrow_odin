@@ -1,0 +1,12 @@
+# Leaves are small, distant, noisy — aggressively compress
+[base_color]
+resolution = 1024
+format = bc1
+
+[normal]
+resolution = 512
+format = rgba
+
+[orm]
+resolution = 512
+format = bc1

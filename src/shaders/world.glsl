@@ -294,7 +294,9 @@ void main() {
         flash_pos, flash_dir, flash_color);
     col = apply_fog(col, vx_wpos, eye_pos, fog_color);
     col = pow(max(col, vec3(0.0)), vec3(1.0 / 2.2));
-    frag_color = vec4(col, 1.0);
+    float dist = length(eye_pos.xyz - vx_wpos);
+    float coc  = clamp(1.0 - dist / 0.45, 0.0, 0.75);
+    frag_color = vec4(col, 1.0 - coc);
 }
 @end
 
@@ -355,7 +357,8 @@ out vec4 frag_color;
 
 void main() {
     vec4 center = texture(sampler2D(t_vm, smp_vm), v_uv);
-    if (center.a < 0.005) discard;      // background — leave world below
+    // World is now rendered into this RT too, so every pixel has content.
+    // alpha=1 means sharp (far away), alpha<1 means blurred (near DOF).
     float coc = 1.0 - center.a;         // 0 = sharp, 0.75 = max blur
     if (coc < 0.015) {
         frag_color = vec4(center.rgb, 1.0);
